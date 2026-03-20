@@ -19,6 +19,25 @@ NEU in V4:
   • Balance-Tracking: Equity-Kurve wird gespeichert
 """
 
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ── HEALTH CHECK SERVER ────────────────────────────────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return port
+
 import os, requests, json, time, hmac, hashlib, base64, logging
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
@@ -939,6 +958,10 @@ def run():
     print(f"  Leverage: {LEVERAGE}x | Risk: {RISK_PCT*100:.0f}%/Trade | MaxPos: {MAX_OPEN}")
     print(f"  Drawdown-Limit: {MAX_DRAWDOWN_PCT}% | Cooldown: {COOLDOWN_MINUTES}min")
     print(f"{'=' * 62}\n")
+
+    # Health-Check Server starten (Render braucht HTTP für Stabilität)
+    hc_port = start_health_server()
+    log.info(f"🌐 Health-Check Server läuft auf Port {hc_port}")
 
     # Startup-Validierung — mit Retry damit Render-Neustart klappt
     startup_ok = False
