@@ -940,9 +940,18 @@ def run():
     print(f"  Drawdown-Limit: {MAX_DRAWDOWN_PCT}% | Cooldown: {COOLDOWN_MINUTES}min")
     print(f"{'=' * 62}\n")
 
-    # Startup-Validierung
-    if not validate_startup():
-        log.error("❌ Startup-Validierung fehlgeschlagen. Bot wird nicht gestartet.")
+    # Startup-Validierung — mit Retry damit Render-Neustart klappt
+    startup_ok = False
+    for startup_attempt in range(5):
+        if validate_startup():
+            startup_ok = True
+            break
+        wait_sec = 30 * (startup_attempt + 1)
+        log.warning(f"⚠️ Startup fehlgeschlagen (Versuch {startup_attempt+1}/5) — warte {wait_sec}s...")
+        time.sleep(wait_sec)
+    if not startup_ok:
+        log.error("❌ Startup nach 5 Versuchen fehlgeschlagen.")
+        tg("❌ <b>JARVIS konnte nicht starten</b> — API nicht erreichbar nach 5 Versuchen")
         return
 
     mem    = load_memory()
@@ -1029,18 +1038,25 @@ def run():
                 if is_in_cooldown(sym):
                     log.debug(f"  ⏳ {sym} in Cooldown")
                     continue
-                result = analyze_coin(sym, params)
+                try:
+                    result = analyze_coin(sym, params)
+                except Exception as e:
+                    log.warning(f"  ⚠️ analyze_coin Fehler für {sym}: {e}")
+                    result = None
                 if result:
                     all_scan_results.append(result)
                     if result['score'] >= params['min_score']:
                         signals.append(result)
                         # Sofort-Meldung: Signal gefunden!
-                        tg(
-                            f"📡 <b>Signal gefunden!</b> {result['name']} {result['signal']}\n"
-                            f"Score: {result['score']} | RSI: {result['rsi']:.0f} | RR: {result['rr']:.2f}\n"
-                            f"Regime: {result['regime']} | 4H: {result['trend_4h']}\n"
-                            f"⏳ Trade wird gleich geprüft & gestartet..."
-                        )
+                        try:
+                            tg(
+                                f"📡 <b>Signal gefunden!</b> {result['name']} {result['signal']}\n"
+                                f"Score: {result['score']} | RSI: {result['rsi']:.0f} | RR: {result['rr']:.2f}\n"
+                                f"Regime: {result['regime']} | 4H: {result['trend_4h']}\n"
+                                f"⏳ Trade wird gleich geprüft & gestartet..."
+                            )
+                        except Exception as e:
+                            log.warning(f"  ⚠️ Telegram Fehler: {e}")
                         log.info(
                             f"  ✅ {result['name']:10} {result['signal']:5} "
                             f"Score:{result['score']:3} RSI:{result['rsi']:.0f} "
@@ -1128,14 +1144,17 @@ def run():
                 log.info(f"💤 Keine Signale (Min-Score: {params['min_score']})")
                 # Alle 30 Min Status-Update auf Telegram
                 if time.time() - last_status_tg >= STATUS_INTERVAL:
-                    tg(
-                        f"🔍 <b>JARVIS scannt aktiv</b>\n"
-                        f"💰 Balance: ${balance:.2f} | DD: {dd:.1f}%\n"
-                        f"📂 Offene Positionen: {open_count}/{MAX_OPEN}\n"
-                        f"💤 Kein Signal bisher — Markt wird weiter beobachtet\n"
-                        f"⏱ Nächster Scan in {SCAN_INTERVAL // 60} Min",
-                        silent=True
-                    )
+                    try:
+                        tg(
+                            f"🔍 <b>JARVIS scannt aktiv</b>\n"
+                            f"💰 Balance: ${balance:.2f} | DD: {dd:.1f}%\n"
+                            f"📂 Offene Positionen: {open_count}/{MAX_OPEN}\n"
+                            f"💤 Kein Signal bisher — Markt wird weiter beobachtet\n"
+                            f"⏱ Nächster Scan in {SCAN_INTERVAL // 60} Min",
+                            silent=True
+                        )
+                    except Exception as e:
+                        log.warning(f"Status-TG Fehler: {e}")
                     last_status_tg = time.time()
             else:
                 log.info(f"📊 {len(signals)} Signal(e) gefunden | {traded} Trade(s) eröffnet")
