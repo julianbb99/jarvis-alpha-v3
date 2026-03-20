@@ -210,10 +210,11 @@ def learn_from_trades(mem, params):
 
     save_params(params)
 
-    tg(f"🧠 <b>Bot hat gelernt!</b> (Brain v{params['version']})\n"
-       f"📊 WR letzte 20 Trades: {wr*100:.1f}%\n"
-       f"🎯 Neuer Min-Score: {params['min_score']}\n"
-       f"📋 Regime-Anpassungen: {', '.join(f'{k}:{v[\"score_bonus\"]:+d}' for k,v in params['regime_scores'].items())}")
+    regime_str = ", ".join(k + ":" + str(v["score_bonus"]) for k,v in params["regime_scores"].items())
+    tg("🧠 <b>Bot hat gelernt!</b> (Brain v" + str(params["version"]) + ")\n"
+       "📊 WR letzte 20 Trades: " + f"{wr*100:.1f}%" + "\n"
+       "🎯 Neuer Min-Score: " + str(params["min_score"]) + "\n"
+       "📋 Regime-Anpassungen: " + regime_str)
 
     return params
 
@@ -346,7 +347,7 @@ def analyze_coin(symbol, params):
     _, bbu, bbl = calc_bb(cl)
     ema50_v    = calc_ema(cl, 50)
 
-    i=n-1; ip=n-2
+    i=n-2; ip=n-3  # n-1 ist offene Candle → RSI None, nutze fertig geschlossene
     r     = rsi_v[i]   if rsi_v  and i < len(rsi_v)  else None
     rp    = rsi_v[ip]  if rsi_v  and ip < len(rsi_v) else None
     at    = atr_v[i]   if atr_v  and i < len(atr_v)  else None
@@ -555,12 +556,11 @@ def run():
 
             # Konto
             balance = get_balance()
+            trade_size = round(balance * RISK_PCT, 2) if balance > 0 else 0
             if balance == 0:
-                print("  ⚠️ Konto leer oder nicht erreichbar")
-                time.sleep(60); continue
-
-            trade_size = round(balance * RISK_PCT, 2)
-            print(f"  💰 Balance: ${balance:.2f} | TradeSize: ${trade_size:.2f} | MinScore: {params['min_score']}")
+                print("  ⚠️ Kein Futures-Guthaben — nur Scan, keine Trades")
+            else:
+                print(f"  💰 Balance: ${balance:.2f} | TradeSize: ${trade_size:.2f} | MinScore: {params['min_score']}")
 
             # Offene Positionen
             positions    = get_open_positions()
@@ -609,8 +609,7 @@ def run():
             slots = MAX_OPEN - open_count
             for sig in signals[:slots]:
                 if trade_size < 3:
-                    print(f"  ⚠️ Balance zu niedrig (${balance:.2f})")
-                    tg(f"⚠️ Balance zu niedrig: ${balance:.2f} — pausiert")
+                    print(f"  ⚠️ Kein Guthaben (${balance:.2f}) — Signal erkannt aber nicht getradet: {sig['name']} {sig['signal']} Score:{sig['score']}")
                     break
 
                 print(f"\n  🚀 {sig['signal']} {sig['name']} @ ${sig['price']:.4f}")
