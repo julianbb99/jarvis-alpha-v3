@@ -43,6 +43,7 @@ LEVERAGE          = 20
 RISK_PCT          = 0.10       # Risiko pro Trade (% des Kapitals)
 MAX_OPEN          = 3          # Max gleichzeitige Positionen
 SCAN_INTERVAL     = 120        # Sekunden zwischen Scans
+STATUS_INTERVAL   = 1800       # Status-Update alle 30 Minuten (Sekunden)
 TIMEFRAME         = '1H'
 TIMEFRAME_TREND   = '4H'       # Übergeordneter Trend-Filter
 MEMORY_FILE       = '/tmp/trade_memory.json'
@@ -970,6 +971,7 @@ def run():
 
     open_symbols_prev = set()
     scan_count        = 0
+    last_status_tg    = 0  # Timestamp letzter Status-TG
 
     while True:
         try:
@@ -1032,6 +1034,13 @@ def run():
                     all_scan_results.append(result)
                     if result['score'] >= params['min_score']:
                         signals.append(result)
+                        # Sofort-Meldung: Signal gefunden!
+                        tg(
+                            f"📡 <b>Signal gefunden!</b> {result['name']} {result['signal']}\n"
+                            f"Score: {result['score']} | RSI: {result['rsi']:.0f} | RR: {result['rr']:.2f}\n"
+                            f"Regime: {result['regime']} | 4H: {result['trend_4h']}\n"
+                            f"⏳ Trade wird gleich geprüft & gestartet..."
+                        )
                         log.info(
                             f"  ✅ {result['name']:10} {result['signal']:5} "
                             f"Score:{result['score']:3} RSI:{result['rsi']:.0f} "
@@ -1117,6 +1126,17 @@ def run():
 
             if not signals:
                 log.info(f"💤 Keine Signale (Min-Score: {params['min_score']})")
+                # Alle 30 Min Status-Update auf Telegram
+                if time.time() - last_status_tg >= STATUS_INTERVAL:
+                    tg(
+                        f"🔍 <b>JARVIS scannt aktiv</b>\n"
+                        f"💰 Balance: ${balance:.2f} | DD: {dd:.1f}%\n"
+                        f"📂 Offene Positionen: {open_count}/{MAX_OPEN}\n"
+                        f"💤 Kein Signal bisher — Markt wird weiter beobachtet\n"
+                        f"⏱ Nächster Scan in {SCAN_INTERVAL // 60} Min",
+                        silent=True
+                    )
+                    last_status_tg = time.time()
             else:
                 log.info(f"📊 {len(signals)} Signal(e) gefunden | {traded} Trade(s) eröffnet")
 
