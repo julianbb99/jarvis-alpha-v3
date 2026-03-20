@@ -32,27 +32,20 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+class ReuseHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
 def start_health_server():
     port = int(os.environ.get("PORT", 10000))
-    try:
-        server = HTTPServer(("0.0.0.0", port), HealthHandler)
-        server.socket.setsockopt(1, 2, 1)  # SO_REUSEADDR
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        return port
-    except OSError as e:
-        # Port bereits belegt — anderen Port probieren oder ohne weitermachen
-        for fallback in [10001, 10002, 10003, 8080, 8000]:
-            try:
-                server = HTTPServer(("0.0.0.0", fallback), HealthHandler)
-                server.socket.setsockopt(1, 2, 1)
-                t = threading.Thread(target=server.serve_forever, daemon=True)
-                t.start()
-                return fallback
-            except OSError:
-                continue
-        log.warning(f"Health-Check Server konnte nicht gestartet werden: {e}")
-        return None
+    for p in [port, 10001, 10002, 8080, 8000]:
+        try:
+            server = ReuseHTTPServer(("0.0.0.0", p), HealthHandler)
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            return p
+        except OSError:
+            continue
+    return None
 
 import requests, json, time, hmac, hashlib, base64, logging
 from datetime import datetime, timezone, timedelta
@@ -1086,16 +1079,7 @@ def run():
                     all_scan_results.append(result)
                     if result['score'] >= params['min_score']:
                         signals.append(result)
-                        # Sofort-Meldung: Signal gefunden!
-                        try:
-                            tg(
-                                f"📡 <b>Signal gefunden!</b> {result['name']} {result['signal']}\n"
-                                f"Score: {result['score']} | RSI: {result['rsi']:.0f} | RR: {result['rr']:.2f}\n"
-                                f"Regime: {result['regime']} | 4H: {result['trend_4h']}\n"
-                                f"⏳ Trade wird gleich geprüft & gestartet..."
-                            )
-                        except Exception as e:
-                            log.warning(f"  ⚠️ Telegram Fehler: {e}")
+
                         log.info(
                             f"  ✅ {result['name']:10} {result['signal']:5} "
                             f"Score:{result['score']:3} RSI:{result['rsi']:.0f} "
@@ -1181,15 +1165,13 @@ def run():
 
             if not signals:
                 log.info(f"💤 Keine Signale (Min-Score: {params['min_score']})")
-                # Alle 30 Min Status-Update auf Telegram
+                # Alle 30 Min Status-Update auf Telegram (nur wenn kein Signal)
                 if time.time() - last_status_tg >= STATUS_INTERVAL:
                     try:
                         tg(
-                            f"🔍 <b>JARVIS scannt aktiv</b>\n"
-                            f"💰 Balance: ${balance:.2f} | DD: {dd:.1f}%\n"
-                            f"📂 Offene Positionen: {open_count}/{MAX_OPEN}\n"
-                            f"💤 Kein Signal bisher — Markt wird weiter beobachtet\n"
-                            f"⏱ Nächster Scan in {SCAN_INTERVAL // 60} Min",
+                            f"😴 <b>Kein Signal seit 30 Min</b>\n"
+                            f"💰 Balance: ${balance:.2f} | Offene Pos: {open_count}/{MAX_OPEN}\n"
+                            f"🔍 Bot scannt weiter alle {SCAN_INTERVAL // 60} Min...",
                             silent=True
                         )
                     except Exception as e:
