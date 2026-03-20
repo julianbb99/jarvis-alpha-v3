@@ -19,6 +19,7 @@ NEU in V4:
   • Balance-Tracking: Equity-Kurve wird gespeichert
 """
 
+import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -53,7 +54,7 @@ def start_health_server():
         log.warning(f"Health-Check Server konnte nicht gestartet werden: {e}")
         return None
 
-import os, requests, json, time, hmac, hashlib, base64, logging
+import requests, json, time, hmac, hashlib, base64, logging
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
