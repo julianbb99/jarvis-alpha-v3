@@ -31,6 +31,42 @@ PARAMS_FILE    = '/tmp/learned_params.json'
 
 BLACKLIST = ['PAXGUSDT', 'XAUTUSDT', 'LYNUSDT', 'XAUUSDT']
 
+# ── BASE44 DASHBOARD ──────────────────────────────────────────────────────────
+DASHBOARD_URL    = 'https://jarvis-24cde2d6.base44.app/functions/saveScanResults'
+DASHBOARD_SECRET = os.getenv('BOT_WEBHOOK_SECRET', 'jarvis2026')
+
+def push_scan_to_dashboard(results, scan_time):
+    """Schreibt Scan-Ergebnisse ans Base44 Dashboard"""
+    if not results:
+        return
+    try:
+        payload = {
+            'scan_time': scan_time,
+            'results': [{
+                'coin':      r.get('name','').replace('USDT',''),
+                'score':     r.get('score', 0),
+                'signal':    r.get('signal', 'NONE'),
+                'rsi':       round(float(r.get('rsi') or 0), 1),
+                'regime':    r.get('regime', 'unknown'),
+                'price':     r.get('price', 0),
+                'bb_dist':   round(float(r.get('bb_dist') or 0), 4),
+                'volume_ok': bool(r.get('vol_ok', False)),
+                'traded':    False,
+                'scan_time': scan_time,
+            } for r in results[:30]]
+        }
+        resp = requests.post(
+            DASHBOARD_URL,
+            headers={'Content-Type': 'application/json', 'x-bot-secret': DASHBOARD_SECRET},
+            json=payload, timeout=8
+        )
+        if resp.status_code == 200:
+            print(f"  📡 {len(results)} Coins → Dashboard ✅")
+        else:
+            print(f"  [Dashboard] Fehler: {resp.status_code} {resp.text[:80]}")
+    except Exception as e:
+        print(f"  [Dashboard] Fehler: {e}")
+
 # ── MEMORY SYSTEM ─────────────────────────────────────────────────────────────
 def load_memory():
     try:
@@ -545,12 +581,19 @@ def run():
             print(f"  🔍 Scanne {len(coins)} Coins...")
 
             signals = []
+            all_scan_results = []
+            scan_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
             for sym in coins:
                 if sym in open_symbols: continue
                 result = analyze_coin(sym, params)
-                if result and result['score'] >= params['min_score']:
-                    signals.append(result)
+                if result:
+                    all_scan_results.append(result)
+                    if result['score'] >= params['min_score']:
+                        signals.append(result)
                 time.sleep(0.15)
+
+            # Scan-Ergebnisse ans Dashboard schicken
+            push_scan_to_dashboard(all_scan_results, scan_time)
 
             signals.sort(key=lambda x: x['score'], reverse=True)
 
