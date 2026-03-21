@@ -117,8 +117,8 @@ TELEGRAM_CHAT_ID  = os.getenv('NOTIFY_CHAT_ID', '')
 BASE_URL          = 'https://api.bitget.com'
 LEVERAGE          = 20
 RISK_PCT          = 0.10       # Risiko pro Trade (% des Kapitals)
-MAX_OPEN          = 5          # Max gleichzeitige Positionen
-SCAN_INTERVAL     = 60         # Sekunden zwischen Scans
+MAX_OPEN          = 7          # Max gleichzeitige Positionen
+SCAN_INTERVAL     = 30         # Sekunden zwischen Scans
 MAX_HOLD_HOURS    = 2.5         # Max Haltedauer in Stunden (dann Force-Close)
 STATUS_INTERVAL   = 10800      # Status-Update alle 3h (nur stilles Lebenszeichen)
 TIMEFRAME         = '1H'
@@ -133,7 +133,7 @@ EQUITY_FILE       = '/tmp/equity_curve.json'
 
 MIN_RR            = 1.1        # Mindest Risk/Reward Ratio
 MAX_DRAWDOWN_PCT  = 15.0       # Bot pausiert bei >X% Drawdown
-COOLDOWN_MINUTES  = 10         # Kein Re-Entry in selben Coin für X Minuten
+COOLDOWN_MINUTES  = 5          # Kein Re-Entry in selben Coin für X Minuten
 MAX_MEMORY_TRADES = 500        # Maximale gespeicherte Trades
 DAILY_REPORT_HOUR = 8          # Uhrzeit für täglichen Report (UTC)
 
@@ -153,7 +153,7 @@ MODES = {
         'scan_interval':  120,
         'tp_mult':        2.0,
         'sl_mult':        1.5,
-        'min_score':      45,
+        'min_score':      40,
         'atr_trail':      0.5,
     },
     'scalp': {
@@ -671,10 +671,10 @@ def get_liquid_coins():
         for c in r.json().get('data', []):
             vol = float(c.get('usdtVolume', 0))
             sym = c.get('symbol', '')
-            if vol >= 300_000 and sym not in BLACKLIST and sym.endswith('USDT'):
+            if vol >= 150_000 and sym not in BLACKLIST and sym.endswith('USDT'):
                 coins.append((sym, vol))
         coins.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in coins[:80]]
+        return [s for s, _ in coins[:100]]
     except Exception as e:
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
@@ -985,7 +985,7 @@ def analyze_coin(symbol, params):
             return None
 
     # 4) Min-Score
-    if score < 38:
+    if score < 32:
         return None
 
     # ── TP/SL Berechnung ──────────────────────────────────────────────────────
@@ -1007,7 +1007,7 @@ def analyze_coin(symbol, params):
     rr = abs(tp - price) / abs(sl - price) if abs(sl - price) > 0 else 0
 
     # 5) RR muss mindestens 1.0 sein
-    if rr < 1.0:
+    if rr < 0.85:
         return None
 
     return {
@@ -2134,7 +2134,7 @@ def run():
 
             # ── Coin-Scan ─────────────────────────────────────────────────────
             liquid  = get_liquid_coins()
-            movers  = get_top_movers(25)
+            movers  = get_top_movers(30)
             # Kombiniere: liquid + movers, ohne Duplikate
             coins_set = list(dict.fromkeys(liquid + movers))
             coins = coins_set
@@ -2189,7 +2189,7 @@ def run():
             # (nicht nur die die über min_score waren — Score-Filter schon passiert)
             if slots_free > 0 and len(signals) < slots_free:
                 # Fallback: nur Trades mit Score ≥60 UND RR ≥1.1 (keine schlechten Trades)
-                fallback_min = max(45, get_mode()['min_score'])
+                fallback_min = max(40, get_mode()['min_score'])
                 extra = [r for r in all_scan_results
                          if r['score'] >= fallback_min
                          and r.get('rr', 0) >= 1.1
