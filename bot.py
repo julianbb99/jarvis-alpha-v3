@@ -119,6 +119,7 @@ LEVERAGE          = 20
 RISK_PCT          = 0.10       # Risiko pro Trade (% des Kapitals)
 MAX_OPEN          = 3          # Max gleichzeitige Positionen
 SCAN_INTERVAL     = 120        # Sekunden zwischen Scans
+MAX_HOLD_HOURS    = 2.5         # Max Haltedauer in Stunden (dann Force-Close)
 STATUS_INTERVAL   = 10800      # Status-Update alle 3h (nur stilles Lebenszeichen)
 TIMEFRAME         = '1H'
 TIMEFRAME_TREND   = '4H'       # Übergeordneter Trend-Filter
@@ -1246,6 +1247,94 @@ def send_daily_report(mem, params, balance):
         f"🧠 Brain v{params['version']} | Min-Score: {params['min_score']}"
     )
 
+
+def check_trade_timeout(positions: list, mem: dict) -> dict:
+    """Schließt Trades die länger als MAX_HOLD_HOURS offen sind."""
+    if not positions:
+        return mem
+
+    now      = datetime.utcnow()
+    trades   = mem.get('trades', [])
+    closed_syms = []
+
+    for pos in positions:
+        symbol   = pos['symbol']
+        side     = pos.get('holdSide', '').upper()   # long / short → LONG / SHORT
+        entry    = float(pos.get('openPriceAvg', 0))
+        mark     = float(pos.get('markPrice', 0))
+        upnl     = float(pos.get('unrealizedPL', 0))
+        avg_open = pos.get('cTime')   # Eröffnungszeit in ms (Bitget)
+
+        # Alter berechnen
+        if avg_open:
+            opened_dt = datetime.utcfromtimestamp(int(avg_open) / 1000)
+        else:
+            # Fallback: Memory suchen
+            mem_trade = next(
+                (t for t in trades if t.get('symbol') == symbol
+                 and t.get('signal','').upper() == side.upper()
+                 and t.get('status') == 'open'), None)
+            if mem_trade and mem_trade.get('opened_at'):
+                try:
+                    opened_dt = datetime.strptime(mem_trade['opened_at'], '%Y-%m-%d %H:%M')
+                except:
+                    continue
+            else:
+                continue
+
+        age_hours = (now - opened_dt).total_seconds() / 3600
+
+        if age_hours >= MAX_HOLD_HOURS:
+            log.info(f"⏰ TIMEOUT: {symbol} {side} | Alter: {age_hours:.1f}h | uPnL: ${upnl:+.3f}")
+
+            # Market Close
+            close_side = 'buy' if side == 'SHORT' else 'sell'
+            qty        = float(pos.get('available', pos.get('total', 0)))
+
+            if qty <= 0:
+                log.warning(f"⚠️ Timeout: {symbol} qty=0, überspringe")
+                continue
+
+            ok = place_order(
+                symbol    = symbol,
+                side      = close_side,
+                trade_side= 'close',
+                size      = qty,
+                order_type= 'market',
+                reduce_only= True,
+            )
+
+            if ok:
+                closed_syms.append(symbol)
+                pnl_pct = (mark - entry) / entry * 100 if side == 'LONG' else (entry - mark) / entry * 100
+                won = upnl > 0
+                e   = '✅' if won else '❌'
+
+                # Memory updaten
+                for t in trades:
+                    if (t.get('symbol') == symbol and t.get('status') == 'open'
+                            and t.get('signal','').upper() == side.upper()):
+                        t['status']    = 'win' if won else 'loss'
+                        t['closed_at'] = now.strftime('%Y-%m-%d %H:%M')
+                        t['pnl']       = round(upnl, 4)
+                        break
+
+                tg(
+                    f"⏰ <b>TIMEOUT CLOSE — {symbol.replace('USDT','')} {side}</b>\n"
+                    f"🕐 Offen seit: {age_hours:.1f}h (Max: {MAX_HOLD_HOURS}h)\n"
+                    f"💰 PnL: {e} <b>${upnl:+.3f}</b> ({pnl_pct:+.1f}%)\n"
+                    f"📌 Entry: ${entry:.4f} → Exit: ${mark:.4f}"
+                )
+            else:
+                log.error(f"❌ Timeout Close fehlgeschlagen: {symbol}")
+
+    if closed_syms:
+        save_memory(mem)
+        _cmd_mem = mem
+        log.info(f"⏰ Timeout: {len(closed_syms)} Position(en) geschlossen: {closed_syms}")
+
+    return mem
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM KOMMANDOS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1552,6 +1641,10 @@ def run():
             if positions:
                 mem = check_partial_tp(positions, mem)
                 save_memory(mem)
+
+            # ── Trade Timeout Check (max 2.5h Haltedauer) ────────────────────
+            if positions:
+                mem = check_trade_timeout(positions, mem)
 
             # ── Drawdown-Pause ────────────────────────────────────────────────
             if _paused:
