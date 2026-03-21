@@ -142,6 +142,52 @@ BLACKLIST = ['PAXGUSDT', 'XAUTUSDT', 'LYNUSDT', 'XAUUSDT']
 DASHBOARD_URL    = 'https://jarvis-24cde2d6.base44.app/functions/saveScanResults'
 DASHBOARD_SECRET = os.getenv('BOT_WEBHOOK_SECRET', 'jarvis2026')
 
+# ── TRADING MODES ─────────────────────────────────────────────────────────────
+MODES = {
+    'swing': {
+        'label':          '📊 Swing (1H)',
+        'timeframe':      '1H',
+        'trend_tf':       '4H',
+        'max_hold_hours': 2.5,
+        'cooldown_min':   120,
+        'scan_interval':  120,
+        'tp_mult':        2.0,
+        'sl_mult':        1.5,
+        'min_score':      55,
+        'atr_trail':      0.5,
+    },
+    'scalp': {
+        'label':          '⚡ Scalp (15min)',
+        'timeframe':      '15m',
+        'trend_tf':       '1H',
+        'max_hold_hours': 0.75,   # 45 Minuten
+        'cooldown_min':   30,
+        'scan_interval':  60,
+        'tp_mult':        1.2,
+        'sl_mult':        0.8,
+        'min_score':      50,
+        'atr_trail':      0.3,
+    },
+}
+_current_mode = 'swing'   # Default
+
+def get_mode():
+    return MODES[_current_mode]
+
+def set_mode(mode_key: str) -> bool:
+    global _current_mode, TIMEFRAME, TIMEFRAME_TREND, MAX_HOLD_HOURS, COOLDOWN_MINUTES, SCAN_INTERVAL
+    if mode_key not in MODES:
+        return False
+    _current_mode      = mode_key
+    m                  = MODES[mode_key]
+    TIMEFRAME          = m['timeframe']
+    TIMEFRAME_TREND    = m['trend_tf']
+    MAX_HOLD_HOURS     = m['max_hold_hours']
+    COOLDOWN_MINUTES   = m['cooldown_min']
+    SCAN_INTERVAL      = m['scan_interval']
+    log.info(f"🔄 Mode gewechselt zu: {m['label']}")
+    return True
+
 # ── GLOBALS (Runtime State) ───────────────────────────────────────────────────
 _cooldown_map   = {}          # symbol → datetime der letzten Position
 _start_balance  = None        # Balance beim Start (für Drawdown-Tracking)
@@ -595,9 +641,11 @@ def get_candles(symbol, gran=TIMEFRAME, limit=100):
         log.debug(f"Candles Fehler {symbol}: {e}")
         return None
 
-def get_4h_trend(symbol) -> str:
-    """Gibt den übergeordneten 4H-Trend zurück: 'up', 'down' oder 'neutral'."""
-    d = get_candles(symbol, gran=TIMEFRAME_TREND, limit=60)
+def get_4h_trend(symbol, gran=None) -> str:
+    """Gibt den übergeordneten Trend zurück: 'up', 'down' oder 'neutral'."""
+    if gran is None:
+        gran = TIMEFRAME_TREND
+    d = get_candles(symbol, gran=gran, limit=60)
     if not d or len(d['cl']) < 50:
         return 'neutral'
     cl    = d['cl']
@@ -826,16 +874,18 @@ def analyze_coin(symbol, params):
     else:
         return None
 
-    # ── 4H-Trend-Filter ───────────────────────────────────────────────────────
-    trend_4h = get_4h_trend(symbol)
+    # ── Trend-Filter (4H im Swing, 1H im Scalp) ─────────────────────────────
+    trend_tf_gran = get_mode()['trend_tf']
+    trend_4h = get_4h_trend(symbol, gran=trend_tf_gran)
+    trend_label = trend_tf_gran
     if signal == 'LONG'  and trend_4h == 'down':
-        score -= 10; reasons.append('⚠️ 4H-Trend gegen Trade')
+        score -= 10; reasons.append(f'⚠️ {trend_label}-Trend gegen Trade')
     elif signal == 'SHORT' and trend_4h == 'up':
-        score -= 10; reasons.append('⚠️ 4H-Trend gegen Trade')
+        score -= 10; reasons.append(f'⚠️ {trend_label}-Trend gegen Trade')
     elif signal == 'LONG'  and trend_4h == 'up':
-        score += 15; reasons.append('4H-Trend ✅')
+        score += 15; reasons.append(f'{trend_label}-Trend ✅')
     elif signal == 'SHORT' and trend_4h == 'down':
-        score += 15; reasons.append('4H-Trend ✅')
+        score += 15; reasons.append(f'{trend_label}-Trend ✅')
 
     # ── Bollinger Bands ───────────────────────────────────────────────────────
     if signal == 'LONG':
@@ -1614,6 +1664,7 @@ _cmd_mem    = None   # Referenz auf Memory (wird im run() gesetzt)
 _cmd_params = None
 
 def cmd_help(chat_id: str):
+    mode_label = get_mode()['label']
     tg(
         "🤖 <b>JARVIS ALPHA — Kommandos</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -1621,6 +1672,7 @@ def cmd_help(chat_id: str):
         "/positions — Offene Positionen & PnL\n"
         "/history — Letzte 10 Trades (heute)\n"
         "/stats — Gesamt-Statistik\n"
+        f"/mode — Modus: {mode_label}\n"
         "/help — Diese Hilfe",
         chat_id=chat_id
     )
@@ -1760,8 +1812,36 @@ def cmd_stats(chat_id: str):
         if "is not defined" not in str(e):
             tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
+def cmd_mode(chat_id: str, args: str = ''):
+    args = args.strip().lower()
+    if not args:
+        m = get_mode()
+        tg(
+            f"🔄 <b>Aktueller Modus: {m['label']}</b>\n\n"
+            f"⏱️ Timeframe: {m['timeframe']} | Trend: {m['trend_tf']}\n"
+            f"⏳ Max Haltedauer: {int(m['max_hold_hours']*60)} min\n"
+            f"🎯 TP: {m['tp_mult']}×ATR | SL: {m['sl_mult']}×ATR\n"
+            f"⏸️ Cooldown: {m['cooldown_min']} min | Scan: {m['scan_interval']}s\n\n"
+            f"📌 Wechseln:\n/mode swing — Swing (1H)\n/mode scalp — Scalp (15min)",
+            chat_id=chat_id
+        )
+    elif args in MODES:
+        if set_mode(args):
+            m = get_mode()
+            tg(
+                f"✅ <b>Modus gewechselt: {m['label']}</b>\n\n"
+                f"⏱️ Timeframe: {m['timeframe']} | Trend: {m['trend_tf']}\n"
+                f"⏳ Max Haltedauer: {int(m['max_hold_hours']*60)} min\n"
+                f"🎯 TP: {m['tp_mult']}×ATR | SL: {m['sl_mult']}×ATR\n"
+                f"⏸️ Cooldown: {m['cooldown_min']} min | Scan alle {m['scan_interval']}s",
+                chat_id=chat_id
+            )
+    else:
+        tg("❓ Unbekannter Modus.\n📌 Verfügbar:\n/mode swing\n/mode scalp", chat_id=chat_id)
+
 def handle_command(text: str, chat_id: str):
     cmd = text.strip().split()[0].lower()
+    args = text.strip()[len(cmd):].strip()
     log.info(f"📩 Kommando: {cmd} von {chat_id}")
     if cmd in ('/help', '/start'):
         cmd_help(chat_id)
@@ -1773,6 +1853,8 @@ def handle_command(text: str, chat_id: str):
         cmd_history(chat_id)
     elif cmd == '/stats':
         cmd_stats(chat_id)
+    elif cmd == '/mode':
+        cmd_mode(chat_id, args)
     else:
         tg(f"❓ Unbekanntes Kommando: <code>{cmd}</code>\nTippe /help für alle Kommandos.", chat_id=chat_id)
 
@@ -1980,7 +2062,7 @@ def run():
                     result = None
                 if result:
                     all_scan_results.append(result)
-                    if result['score'] >= params['min_score']:
+                    if result['score'] >= max(params['min_score'], get_mode()['min_score']):
                         signals.append(result)
 
                         log.info(
@@ -2001,14 +2083,29 @@ def run():
             slots_free = MAX_OPEN - open_count
             traded     = 0
 
+            # Wenn Slots frei sind: alle Scan-Ergebnisse als Kandidaten nehmen
+            # (nicht nur die die über min_score waren — Score-Filter schon passiert)
+            if slots_free > 0 and len(signals) < slots_free:
+                # Zu wenig Signale → auch Kandidaten mit etwas niedrigerem Score nehmen
+                fallback_min = max(40, get_mode()['min_score'] - 10)
+                extra = [r for r in all_scan_results
+                         if r['score'] >= fallback_min
+                         and r not in signals
+                         and not is_duplicate_trade(r['symbol'], r['signal'], mem)
+                         and not is_in_cooldown(r['symbol'])]
+                extra.sort(key=lambda x: x['score'], reverse=True)
+                signals = signals + extra[:(slots_free - len(signals))]
+                if extra:
+                    log.info(f"  📥 {len(extra[:slots_free-len(signals)+len(extra)])} Fallback-Kandidaten ergänzt (Score ≥{fallback_min})")
+
             for sig in signals[:slots_free]:
                 if balance <= 0 or trade_size <= 0:
                     log.warning("⚠️ Kein Balance für Trade")
                     break
 
-                min_rr = params.get('min_rr', MIN_RR)
+                min_rr = max(0.9, params.get('min_rr', MIN_RR) - (0.2 if slots_free >= 2 else 0))
                 if sig['rr'] < min_rr:
-                    log.info(f"  ⏭️ {sig['name']} RR zu niedrig ({sig['rr']:.2f} < {min_rr}) — skip")
+                    log.info(f"  ⏭️ {sig['name']} RR zu niedrig ({sig['rr']:.2f} < {min_rr:.2f}) — skip")
                     continue
 
                 if is_duplicate_trade(sig['symbol'], sig['signal'], mem):
