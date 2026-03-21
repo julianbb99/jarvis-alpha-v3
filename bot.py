@@ -668,10 +668,10 @@ def get_liquid_coins():
         for c in r.json().get('data', []):
             vol = float(c.get('usdtVolume', 0))
             sym = c.get('symbol', '')
-            if vol >= 2e6 and sym not in BLACKLIST and sym.endswith('USDT'):
+            if vol >= 800_000 and sym not in BLACKLIST and sym.endswith('USDT'):
                 coins.append((sym, vol))
         coins.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in coins[:45]]
+        return [s for s, _ in coins[:60]]
     except Exception as e:
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
@@ -864,9 +864,9 @@ def analyze_coin(symbol, params):
     elif rp > params['rsi_short'] and r <= params['rsi_short']:
         score += 45; signal = 'SHORT'; reasons.append(f'RSI Drop {rp:.0f}→{r:.0f}')
     elif r < params['rsi_extreme_l']:
-        score += 35; signal = 'LONG';  reasons.append(f'RSI oversold {r:.0f}')  # war 25
+        score += 40; signal = 'LONG';  reasons.append(f'RSI oversold {r:.0f}')
     elif r > params['rsi_extreme_s']:
-        score += 35; signal = 'SHORT'; reasons.append(f'RSI overbought {r:.0f}')  # war 25
+        score += 40; signal = 'SHORT'; reasons.append(f'RSI overbought {r:.0f}')
     elif r < params['rsi_long'] + 5 and rp < r:  # RSI steigt aus überverkaufter Zone
         score += 20; signal = 'LONG';  reasons.append(f'RSI erholt {r:.0f}')
     elif r > params['rsi_short'] - 5 and rp > r:  # RSI fällt aus überkaufter Zone
@@ -938,32 +938,35 @@ def analyze_coin(symbol, params):
         score += reg_bonus
         reasons.append(f'Regime:{regime}({reg_bonus:+d})')
 
-    # ── QUALITÄTSFILTER — harte Mindestanforderungen ────────────────────────
-    # 1) Trend darf NICHT stark gegen den Trade laufen (nur neutral OK)
+    # ── QUALITÄTSFILTER — ausgewogene Mindestanforderungen ─────────────────
+    # 1) Trend gegen Trade: Score-Malus, ABER: wenn RSI extrem + BB Touch → erlaubt
+    #    Harter Block nur wenn Score trotzdem unter 65
     if signal == 'LONG'  and trend_4h == 'down':
-        return None   # niemals long gegen starken Downtrend
+        score -= 15   # wurde schon -10 oben, jetzt insgesamt -25
     if signal == 'SHORT' and trend_4h == 'up':
-        return None   # niemals short gegen starken Uptrend
+        score -= 15
 
-    # 2) MACD darf NICHT aktiv gegen den Trade laufen
-    if macd is not None and macd_sig is not None:
-        if signal == 'LONG'  and macd_hist is not None and macd_hist < -0.0001 * price:
-            return None   # MACD bearish Momentum → kein Long
-        if signal == 'SHORT' and macd_hist is not None and macd_hist > 0.0001 * price:
-            return None   # MACD bullish Momentum → kein Short
+    # 2) MACD nur blocken wenn STARK gegen Trade (nicht bei kleinem Gegenwind)
+    if macd is not None and macd_sig is not None and macd_hist is not None:
+        threshold = 0.0005 * price   # nur bei starkem Momentum blocken
+        if signal == 'LONG'  and macd_hist < -threshold:
+            return None
+        if signal == 'SHORT' and macd_hist >  threshold:
+            return None
 
-    # 3) BB muss zumindest in der Nähe sein (kein Entry mitten im Band)
+    # 3) BB: Preis darf nicht zu weit vom Band sein
+    bb_max_dist = params.get('bb_near', 0.04) * 1.5   # etwas lockerer als vorher
     if signal == 'LONG':
         bb_dist = (price - bbl_v) / price
-        if bb_dist > params.get('bb_near', 0.04):
-            return None   # zu weit vom unteren Band
+        if bb_dist > bb_max_dist:
+            return None
     else:
         bb_dist = (bbu_v - price) / price
-        if bb_dist > params.get('bb_near', 0.04):
-            return None   # zu weit vom oberen Band
+        if bb_dist > bb_max_dist:
+            return None
 
-    # 4) Min-Score vor TP/SL (früh rauswerfen)
-    if score < 50:
+    # 4) Min-Score
+    if score < 48:
         return None
 
     # ── TP/SL Berechnung ──────────────────────────────────────────────────────
