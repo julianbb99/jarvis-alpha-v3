@@ -123,6 +123,10 @@ STATUS_INTERVAL   = 10800      # Status-Update alle 3h (nur stilles Lebenszeiche
 TIMEFRAME         = '1H'
 TIMEFRAME_TREND   = '4H'       # Übergeordneter Trend-Filter
 MEMORY_FILE       = '/tmp/trade_memory.json'
+BASE44_API_URL    = 'https://base44.app/api/apps/69a75a817485663824cde2d6/entities'
+BASE44_TOKEN      = os.environ.get('BASE44_SERVICE_TOKEN', '')
+BASE44_MEM_KEY    = 'bot_trade_memory'   # title in AgentMemory
+BASE44_PARAM_KEY  = 'bot_learned_params'
 PARAMS_FILE       = '/tmp/learned_params.json'
 EQUITY_FILE       = '/tmp/equity_curve.json'
 
@@ -273,7 +277,57 @@ def validate_startup() -> bool:
 #  MEMORY & PARAMS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _b44_get(key: str) -> dict | None:
+    """Liest ein JSON-Objekt aus Base44 AgentMemory."""
+    try:
+        hdrs = {'Authorization': f'Bearer {BASE44_TOKEN}', 'Content-Type': 'application/json'}
+        r = requests.get(f'{BASE44_API_URL}/AgentMemory', headers=hdrs, timeout=8)
+        for rec in r.json():
+            if rec.get('title') == key:
+                return json.loads(rec.get('body', '{}'))
+    except:
+        pass
+    return None
+
+def _b44_set(key: str, data: dict):
+    """Speichert ein JSON-Objekt in Base44 AgentMemory (upsert)."""
+    try:
+        hdrs = {'Authorization': f'Bearer {BASE44_TOKEN}', 'Content-Type': 'application/json'}
+        # Bestehenden Eintrag suchen
+        r    = requests.get(f'{BASE44_API_URL}/AgentMemory', headers=hdrs, timeout=8)
+        recs = r.json() if r.status_code == 200 else []
+        body = json.dumps(data)
+        existing = next((rec for rec in recs if rec.get('title') == key), None)
+        if existing:
+            requests.put(
+                f'{BASE44_API_URL}/AgentMemory/{existing["id"]}',
+                headers=hdrs,
+                json={'body': body},
+                timeout=8,
+            )
+        else:
+            requests.post(
+                f'{BASE44_API_URL}/AgentMemory',
+                headers=hdrs,
+                json={'title': key, 'body': body, 'category': 'bot', 'importance': 'high'},
+                timeout=8,
+            )
+    except Exception as e:
+        log.warning(f'Base44 save Fehler: {e}')
+
 def load_memory():
+    # 1. Versuch: Base44 persistentes Memory
+    data = _b44_get(BASE44_MEM_KEY)
+    if data and 'trades' in data:
+        log.info(f'📦 Memory aus Base44 geladen: {len(data["trades"])} Trades')
+        # Auch lokal cachen
+        try:
+            with open(MEMORY_FILE, 'w') as f:
+                json.dump(data, f)
+        except:
+            pass
+        return data
+    # 2. Fallback: lokale Datei
     try:
         with open(MEMORY_FILE, 'r') as f:
             data = json.load(f)
@@ -286,17 +340,19 @@ def load_memory():
 def save_memory(mem):
     # Memory-Cleanup: maximal MAX_MEMORY_TRADES behalten
     if len(mem.get('trades', [])) > MAX_MEMORY_TRADES:
-        # Offene Trades immer behalten, älteste geschlossene löschen
         open_t   = [t for t in mem['trades'] if t.get('status') == 'open']
         closed_t = [t for t in mem['trades'] if t.get('status') != 'open']
         closed_t = closed_t[-(MAX_MEMORY_TRADES - len(open_t)):]
         mem['trades'] = closed_t + open_t
         log.info(f"🧹 Memory bereinigt: {len(mem['trades'])} Trades behalten")
+    # Lokal cachen (schnell)
     try:
         with open(MEMORY_FILE, 'w') as f:
             json.dump(mem, f, indent=2)
     except Exception as e:
-        log.error(f"Memory Save Error: {e}")
+        log.error(f"Memory Local Save Error: {e}")
+    # Base44 persistieren (überleben Restarts)
+    _b44_set(BASE44_MEM_KEY, mem)
 
 def load_params():
     defaults = {
@@ -323,6 +379,22 @@ def load_params():
         'win_rate':     0.0,
         'last_update':  None,
     }
+    # Base44 zuerst
+    b44_saved = _b44_get(BASE44_PARAM_KEY)
+    if b44_saved:
+        try:
+            if 'regime_scores' in b44_saved:
+                for k, v in b44_saved['regime_scores'].items():
+                    if k in defaults['regime_scores']:
+                        defaults['regime_scores'][k].update(v)
+                del b44_saved['regime_scores']
+            defaults.update(b44_saved)
+            if defaults.get('min_score', 55) > 50:
+                defaults['min_score'] = 45
+            log.info(f'🧠 Params aus Base44 geladen (v{defaults.get("version",1)})')
+            return defaults
+        except:
+            pass
     try:
         with open(PARAMS_FILE, 'r') as f:
             saved = json.load(f)
@@ -345,7 +417,8 @@ def save_params(p):
         with open(PARAMS_FILE, 'w') as f:
             json.dump(p, f, indent=2)
     except Exception as e:
-        log.error(f"Params Save Error: {e}")
+        log.error(f"Params Local Save Error: {e}")
+    _b44_set(BASE44_PARAM_KEY, p)
 
 # ── EQUITY TRACKING ───────────────────────────────────────────────────────────
 
