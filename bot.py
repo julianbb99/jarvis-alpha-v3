@@ -1089,8 +1089,22 @@ def round_qty(qty: float, symbol: str = '') -> str:
 
 def place_order(symbol, side, size_usdt, tp, sl, price):
     qty = size_usdt * LEVERAGE / price
+    # Mindest-Order Prüfung (Bitget min $5 USDT Notional)
+    precision_info = _precision_cache.get(symbol, {})
+    min_qty       = float(precision_info.get('minTradeNum', 1))
+    min_usdt      = float(precision_info.get('minTradeUSDT', 5))
+    notional_usdt = qty * price
+
     if qty <= 0:
+        log.warning(f"  ⚠️ {symbol}: qty {qty:.4f} ≤ 0 — skip")
         return None
+    if qty < min_qty:
+        log.warning(f"  ⚠️ {symbol}: qty {qty:.4f} unter Minimum {min_qty} — skip")
+        return None
+    if notional_usdt < min_usdt:
+        log.warning(f"  ⚠️ {symbol}: Notional ${notional_usdt:.2f} unter Min ${min_usdt:.0f} — skip")
+        return None
+
     set_leverage(symbol, LEVERAGE)
     order_side = 'buy' if side == 'LONG' else 'sell'
 
@@ -2218,6 +2232,9 @@ def run():
             for sig in signals[:slots_free]:
                 if balance <= 0 or trade_size <= 0:
                     log.warning("⚠️ Kein Balance für Trade")
+                    break
+                if balance < 5.5:
+                    log.warning(f"⚠️ Zu wenig freies Margin (${balance:.2f}) — Trade übersprungen")
                     break
 
                 min_rr = max(0.9, params.get('min_rr', MIN_RR) - (0.2 if slots_free >= 2 else 0))
