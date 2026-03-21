@@ -887,9 +887,132 @@ def place_order(symbol, side, size_usdt, tp, sl, price):
     }
     return api_post('/api/v2/mix/order/place-order', body)
 
+def partial_close(symbol: str, side: str, close_qty: float) -> bool:
+    """Schließt einen Teil der Position (Flash Close)."""
+    close_side = 'sell' if side == 'LONG' else 'buy'
+    body = {
+        'symbol':      symbol,
+        'productType': 'USDT-FUTURES',
+        'marginCoin':  'USDT',
+        'size':        round_qty(close_qty, symbol),
+        'side':        close_side,
+        'tradeSide':   'close',
+        'orderType':   'market',
+    }
+    resp = api_post('/api/v2/mix/order/place-order', body)
+    if resp and resp.get('code') == '00000':
+        log.info(f"  ✂️ Partial Close {symbol}: {close_qty:.2f} Kontrakte")
+        return True
+    log.warning(f"  ⚠️ Partial Close fehlgeschlagen: {resp}")
+    return False
+
+def set_tp2(symbol: str, side: str, tp2_price: float) -> bool:
+    """Setzt einen neuen TP (Stop-Surplus) für die verbleibende Position."""
+    hold_side = 'long' if side == 'LONG' else 'short'
+    body = {
+        'symbol':         symbol,
+        'productType':    'USDT-FUTURES',
+        'marginCoin':     'USDT',
+        'planType':       'profit_loss',
+        'stopSurplusPrice': round_price(tp2_price, symbol),
+        'stopSurplusTriggerType': 'mark_price',
+        'holdSide':       hold_side,
+    }
+    resp = api_post('/api/v2/mix/order/place-tpsl-order', body)
+    if resp and resp.get('code') == '00000':
+        log.info(f"  🎯 TP2 gesetzt: {symbol} @ {round_price(tp2_price, symbol)}")
+        return True
+    log.warning(f"  ⚠️ TP2 setzen fehlgeschlagen: {resp}")
+    return False
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TRADE MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def check_partial_tp(positions: list, mem: dict):
+    """
+    Partial TP System:
+    - TP1 bei definiertem Ziel: 60-75% der Position schließen
+    - TP2 für Rest: weiterer ATR-basierter Zielpreis
+    - Trend-Check: Starker Trend → 60% schließen, schwacher → 75%
+    """
+    for pos in positions:
+        symbol    = pos.get('symbol', '')
+        hold_side = pos.get('holdSide', '')  # 'long' oder 'short'
+        side      = 'LONG' if hold_side == 'long' else 'SHORT'
+        total_qty = float(pos.get('total', 0))
+        entry     = float(pos.get('openPriceAvg', 0))
+        mark      = float(pos.get('markPrice', 0))
+        unreal_pl = float(pos.get('unrealizedPL', 0))
+        margin    = float(pos.get('marginSize', 1))
+
+        if total_qty <= 0 or entry <= 0:
+            continue
+
+        # Trade im Memory suchen
+        open_trades = [t for t in mem.get('trades', []) if t.get('status') == 'open' and t.get('symbol') == symbol]
+        if not open_trades:
+            continue
+        t = open_trades[0]
+
+        # Bereits partial TP ausgeführt? → überspringen
+        if t.get('partial_done'):
+            continue
+
+        tp1   = float(t.get('tp', 0))
+        atr   = float(t.get('atr', 0))
+        if tp1 <= 0 or atr <= 0:
+            continue
+
+        # TP1 erreicht prüfen
+        tp1_hit = (side == 'LONG'  and mark >= tp1) or                   (side == 'SHORT' and mark <= tp1)
+
+        if not tp1_hit:
+            continue
+
+        # Trend noch intakt? → bestimmt wie viel wir schließen
+        trend_4h = get_4h_trend(symbol)
+        if side == 'LONG'  and trend_4h == 'up':
+            close_pct = 0.60   # 60% schließen, 40% läuft weiter
+        elif side == 'SHORT' and trend_4h == 'down':
+            close_pct = 0.60
+        else:
+            close_pct = 0.75   # Trend neutral/gegen → 75% sichern
+
+        close_qty = total_qty * close_pct
+        keep_qty  = total_qty - close_qty
+
+        if close_qty <= 0:
+            continue
+
+        log.info(f"🎯 TP1 erreicht: {symbol} {side} | Mark: ${mark:.4f} | Schließe {close_pct*100:.0f}% ({close_qty:.2f})")
+
+        # Partial Close ausführen
+        if partial_close(symbol, side, close_qty):
+            t['partial_done'] = True
+            t['partial_price'] = mark
+            t['partial_qty']   = close_qty
+
+            # TP2 setzen für verbleibende Position
+            if side == 'LONG':
+                tp2 = mark + atr * 1.5
+            else:
+                tp2 = mark - atr * 1.5
+
+            set_tp2(symbol, side, tp2)
+            t['tp2'] = tp2
+
+            # Telegram Meldung
+            profit_pct = (mark - entry) / entry * 100 if side == 'LONG' else (entry - mark) / entry * 100
+            tg(
+                f"✂️ <b>PARTIAL TP — {symbol.replace('USDT','')} {side}</b>\n"
+                f"💰 TP1 @ ${round_price(mark, symbol)} ({profit_pct:+.1f}%)\n"
+                f"📦 {close_pct*100:.0f}% geschlossen ({close_qty:.2f} Kontrakte)\n"
+                f"🚀 Rest läuft weiter → TP2 @ ${round_price(tp2, symbol)}\n"
+                f"📊 Trend 4H: {trend_4h}"
+            )
+
+    return mem
 
 def is_in_cooldown(symbol: str) -> bool:
     """Prüft ob ein Coin gerade in der Cooldown-Phase ist."""
@@ -1140,6 +1263,11 @@ def run():
             params            = check_closed_trades(mem, params, open_symbols_prev, open_symbols)
             open_symbols_prev = open_symbols.copy()
 
+            # ── Partial TP Check ─────────────────────────────────────────
+            if positions:
+                mem = check_partial_tp(positions, mem)
+                save_memory(mem)
+
             # ── Drawdown-Pause ────────────────────────────────────────────────
             if _paused:
                 log.warning(f"🚨 Drawdown-Pause aktiv — überspringe Scan")
@@ -1223,23 +1351,25 @@ def run():
                     log.info(f"  ✅ Order platziert: {order_id}")
 
                     mem['trades'].append({
-                        'symbol':      sig['symbol'],
-                        'signal':      sig['signal'],
-                        'entry_price': sig['price'],
-                        'tp':          sig['tp'],
-                        'sl':          sig['sl'],
-                        'rr':          round(sig['rr'], 2),
-                        'score':       sig['score'],
-                        'regime':      sig['regime'],
-                        'trend_4h':    sig['trend_4h'],
-                        'reasons':     sig['reasons'],
-                        'rsi':         round(sig['rsi'], 1),
-                        'atr_pct':     round(sig['atr_pct'], 2),
-                        'stoch_k':     round(sig['stoch_k'], 1) if sig['stoch_k'] else None,
-                        'status':      'open',
-                        'opened_at':   datetime.now().strftime('%Y-%m-%d %H:%M'),
-                        'order_id':    order_id,
-                        'trade_size':  trade_size,
+                        'symbol':       sig['symbol'],
+                        'signal':       sig['signal'],
+                        'entry_price':  sig['price'],
+                        'tp':           sig['tp'],
+                        'sl':           sig['sl'],
+                        'atr':          sig['atr'],
+                        'rr':           round(sig['rr'], 2),
+                        'score':        sig['score'],
+                        'regime':       sig['regime'],
+                        'trend_4h':     sig['trend_4h'],
+                        'reasons':      sig['reasons'],
+                        'rsi':          round(sig['rsi'], 1),
+                        'atr_pct':      round(sig['atr_pct'], 2),
+                        'stoch_k':      round(sig['stoch_k'], 1) if sig['stoch_k'] else None,
+                        'status':       'open',
+                        'opened_at':    datetime.now().strftime('%Y-%m-%d %H:%M'),
+                        'order_id':     order_id,
+                        'trade_size':   trade_size,
+                        'partial_done': False,
                     })
                     save_memory(mem)
 
