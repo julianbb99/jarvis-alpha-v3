@@ -980,6 +980,25 @@ def place_order(symbol, side, size_usdt, tp, sl, price):
         return None
     set_leverage(symbol, LEVERAGE)
     order_side = 'buy' if side == 'LONG' else 'sell'
+
+    # ── Live-Preis holen & SL/TP validieren ──────────────────────────────────
+    try:
+        ticker = api_get(f'/api/v2/mix/market/ticker?symbol={symbol}&productType=USDT-FUTURES')
+        live_price = float(ticker.get('data', [{}])[0].get('lastPr', price))
+    except Exception:
+        live_price = price
+
+    # SL muss auf der richtigen Seite des Live-Preises liegen
+    # SHORT: SL > live_price | LONG: SL < live_price
+    # Minimaler Abstand: 0.3% vom Preis
+    min_dist = live_price * 0.003
+    if side == 'SHORT':
+        sl = max(sl, live_price + min_dist)
+        tp = min(tp, live_price - min_dist)
+    else:  # LONG
+        sl = min(sl, live_price - min_dist)
+        tp = max(tp, live_price + min_dist)
+
     body = {
         'symbol':                 symbol,
         'productType':            'USDT-FUTURES',
