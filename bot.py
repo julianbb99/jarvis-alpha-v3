@@ -1201,33 +1201,47 @@ def send_daily_report(mem, params, balance):
     eq      = load_equity()
     dd_pct  = eq.get('current_drawdown', 0)
 
-    # Trades von heute
+    # Trades von heute (closed_at ODER opened_at beginnt mit heute)
     today_trades = [
         t for t in trades
-        if t.get('closed_at', '').startswith(today) and t.get('status') in ['win', 'loss']
+        if (t.get('closed_at', '').startswith(today) or t.get('opened_at', '').startswith(today))
+        and t.get('status') in ['win', 'loss']
     ]
     today_wins   = len([t for t in today_trades if t['status'] == 'win'])
     today_losses = len([t for t in today_trades if t['status'] == 'loss'])
-    today_pnl    = sum(t.get('pnl_pct', 0) for t in today_trades)
+    today_pnl    = sum(t.get('pnl', 0) for t in today_trades)   # Dollar, nicht %
 
     # Gesamt-Statistik
     all_closed = [t for t in trades if t.get('status') in ['win', 'loss']]
     all_wins   = len([t for t in all_closed if t['status'] == 'win'])
     all_wr     = (all_wins / len(all_closed) * 100) if all_closed else 0
+    all_pnl    = sum(t.get('pnl', 0) for t in all_closed)
 
     # Offene Positionen
     open_trades = [t for t in trades if t.get('status') == 'open']
+
+    # Letzte 3 Trades für Übersicht
+    recent = sorted(today_trades, key=lambda x: x.get('closed_at',''))[-3:]
+    recent_lines = ''
+    for t in reversed(recent):
+        sym  = t.get('symbol','').replace('USDT','')
+        e    = '✅' if t['status'] == 'win' else '❌'
+        pnl  = t.get('pnl', 0)
+        ts   = t.get('closed_at','')[-5:] or t.get('opened_at','')[-5:]
+        recent_lines += f'{e} {ts} {sym} ${pnl:+.3f}\n'
 
     tg(
         f"📅 <b>TAGES-REPORT — {today}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 Balance: <b>${balance:.2f}</b>\n"
         f"📉 Drawdown: {dd_pct:.1f}% (Max {MAX_DRAWDOWN_PCT}%)\n"
-        f"\n<b>Heute:</b>\n"
+        f"\n<b>Heute ({today_wins + today_losses} Trades):</b>\n"
         f"✅ Wins: {today_wins}  ❌ Losses: {today_losses}\n"
-        f"💸 Tages-PnL: {today_pnl:+.2f}%\n"
-        f"\n<b>Gesamt:</b>\n"
+        f"💸 Tages-PnL: <b>${today_pnl:+.3f}</b>\n"
+        + (f"{recent_lines}" if recent_lines else '')
+        + f"\n<b>Gesamt:</b>\n"
         f"📊 Win-Rate: {all_wr:.1f}% ({len(all_closed)} Trades)\n"
+        f"💰 Gesamt-PnL: <b>${all_pnl:+.3f}</b>\n"
         f"🔓 Offen: {len(open_trades)} Position(en)\n"
         f"🧠 Brain v{params['version']} | Min-Score: {params['min_score']}"
     )
