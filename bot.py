@@ -938,6 +938,34 @@ def analyze_coin(symbol, params):
         score += reg_bonus
         reasons.append(f'Regime:{regime}({reg_bonus:+d})')
 
+    # ── QUALITÄTSFILTER — harte Mindestanforderungen ────────────────────────
+    # 1) Trend darf NICHT stark gegen den Trade laufen (nur neutral OK)
+    if signal == 'LONG'  and trend_4h == 'down':
+        return None   # niemals long gegen starken Downtrend
+    if signal == 'SHORT' and trend_4h == 'up':
+        return None   # niemals short gegen starken Uptrend
+
+    # 2) MACD darf NICHT aktiv gegen den Trade laufen
+    if macd is not None and macd_sig is not None:
+        if signal == 'LONG'  and macd_hist is not None and macd_hist < -0.0001 * price:
+            return None   # MACD bearish Momentum → kein Long
+        if signal == 'SHORT' and macd_hist is not None and macd_hist > 0.0001 * price:
+            return None   # MACD bullish Momentum → kein Short
+
+    # 3) BB muss zumindest in der Nähe sein (kein Entry mitten im Band)
+    if signal == 'LONG':
+        bb_dist = (price - bbl_v) / price
+        if bb_dist > params.get('bb_near', 0.04):
+            return None   # zu weit vom unteren Band
+    else:
+        bb_dist = (bbu_v - price) / price
+        if bb_dist > params.get('bb_near', 0.04):
+            return None   # zu weit vom oberen Band
+
+    # 4) Min-Score vor TP/SL (früh rauswerfen)
+    if score < 50:
+        return None
+
     # ── TP/SL Berechnung ──────────────────────────────────────────────────────
     if signal == 'LONG':
         tp = price + at * tp_mult
@@ -947,6 +975,10 @@ def analyze_coin(symbol, params):
         sl = price + at * sl_mult
 
     rr = abs(tp - price) / abs(sl - price) if abs(sl - price) > 0 else 0
+
+    # 5) RR muss mindestens 1.1 sein
+    if rr < 1.1:
+        return None
 
     return {
         'symbol':   symbol,
@@ -2086,17 +2118,20 @@ def run():
             # Wenn Slots frei sind: alle Scan-Ergebnisse als Kandidaten nehmen
             # (nicht nur die die über min_score waren — Score-Filter schon passiert)
             if slots_free > 0 and len(signals) < slots_free:
-                # Zu wenig Signale → auch Kandidaten mit etwas niedrigerem Score nehmen
-                fallback_min = max(40, get_mode()['min_score'] - 10)
+                # Fallback: nur Trades mit Score ≥60 UND RR ≥1.1 (keine schlechten Trades)
+                fallback_min = max(60, get_mode()['min_score'])
                 extra = [r for r in all_scan_results
                          if r['score'] >= fallback_min
+                         and r.get('rr', 0) >= 1.1
                          and r not in signals
                          and not is_duplicate_trade(r['symbol'], r['signal'], mem)
                          and not is_in_cooldown(r['symbol'])]
                 extra.sort(key=lambda x: x['score'], reverse=True)
+                before = len(signals)
                 signals = signals + extra[:(slots_free - len(signals))]
-                if extra:
-                    log.info(f"  📥 {len(extra[:slots_free-len(signals)+len(extra)])} Fallback-Kandidaten ergänzt (Score ≥{fallback_min})")
+                added = len(signals) - before
+                if added:
+                    log.info(f"  📥 {added} Fallback-Kandidaten ergänzt (Score ≥{fallback_min}, RR ≥1.1)")
 
             for sig in signals[:slots_free]:
                 if balance <= 0 or trade_size <= 0:
