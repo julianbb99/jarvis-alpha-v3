@@ -49,13 +49,16 @@ def start_health_server():
 
 import requests, json, time, hmac, hashlib, base64, logging
 
-# Coin-spezifische Präzision (wird beim Start geladen)
-_PRICE_PLACES  = {}  # symbol → int (Dezimalstellen Preis)
-_QTY_PLACES    = {}  # symbol → int (Dezimalstellen Menge)
+# Coin-spezifische Präzision (wird beim Start + alle 6h geladen)
+_PRICE_PLACES      = {}   # symbol → int (Dezimalstellen Preis)
+_QTY_PLACES        = {}   # symbol → int (Dezimalstellen Menge)
+_PRECISION_LOADED  = 0.0  # Timestamp letztes Laden
 
-def load_contract_precision():
-    """Lädt pricePlace + volumePlace für alle Coins von Bitget beim Start."""
-    global _PRICE_PLACES, _QTY_PLACES
+def load_contract_precision(force: bool = False):
+    """Lädt pricePlace + volumePlace für alle Coins. Wird alle 6h automatisch erneuert."""
+    global _PRICE_PLACES, _QTY_PLACES, _PRECISION_LOADED
+    if not force and time.time() - _PRECISION_LOADED < 21600:  # 6h Cache
+        return
     try:
         ts   = str(int(time.time() * 1000))
         path = '/api/v2/mix/market/contracts?productType=USDT-FUTURES'
@@ -70,9 +73,29 @@ def load_contract_precision():
             sym = c.get('symbol','')
             _PRICE_PLACES[sym] = int(c.get('pricePlace', 4))
             _QTY_PLACES[sym]   = int(c.get('volumePlace', 2))
+        _PRECISION_LOADED = time.time()
         log.info(f"✅ Precision geladen für {len(_PRICE_PLACES)} Kontrakte")
     except Exception as e:
         log.warning(f"⚠️ Precision-Laden fehlgeschlagen: {e}")
+
+def get_precision_live(symbol: str):
+    """Holt Precision für einen einzelnen Coin live — Fallback wenn Cache leer."""
+    try:
+        ts   = str(int(time.time() * 1000))
+        path = f'/api/v2/mix/market/contracts?productType=USDT-FUTURES&symbol={symbol}'
+        sig  = sign(ts, 'GET', path, '')
+        hdrs = {
+            'ACCESS-KEY': BITGET_API_KEY, 'ACCESS-SIGN': sig,
+            'ACCESS-TIMESTAMP': ts, 'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+            'Content-Type': 'application/json',
+        }
+        r = requests.get(BASE_URL + path, headers=hdrs, timeout=8)
+        c = r.json().get('data', [{}])[0]
+        _PRICE_PLACES[symbol] = int(c.get('pricePlace', 4))
+        _QTY_PLACES[symbol]   = int(c.get('volumePlace', 2))
+        log.info(f"  📐 Precision {symbol}: price={_PRICE_PLACES[symbol]} qty={_QTY_PLACES[symbol]}")
+    except Exception as e:
+        log.warning(f"  ⚠️ Precision Fallback für {symbol}: {e}")
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
@@ -823,9 +846,11 @@ def set_leverage(symbol, lev):
 
 def round_price(price: float, symbol: str = '') -> str:
     """Rundet Preis exakt auf Bitget pricePlace Dezimalstellen."""
+    if symbol and symbol not in _PRICE_PLACES:
+        get_precision_live(symbol)  # Live nachladen
     decimals = _PRICE_PLACES.get(symbol, None)
     if decimals is None:
-        # Fallback wenn Precision noch nicht geladen
+        # Letzter Fallback nach Preisgröße
         if price >= 1000:   decimals = 1
         elif price >= 100:  decimals = 2
         elif price >= 10:   decimals = 3
@@ -837,6 +862,8 @@ def round_price(price: float, symbol: str = '') -> str:
 
 def round_qty(qty: float, symbol: str = '') -> str:
     """Rundet Menge exakt auf Bitget volumePlace Dezimalstellen."""
+    if symbol and symbol not in _QTY_PLACES:
+        get_precision_live(symbol)  # Live nachladen
     decimals = _QTY_PLACES.get(symbol, 2)
     return f"{qty:.{decimals}f}"
 
@@ -1073,13 +1100,18 @@ def run():
         f"🔍 Scanning alle {SCAN_INTERVAL // 60} Min..."
     )
 
-    open_symbols_prev = set()
-    scan_count        = 0
-    last_status_tg    = 0  # Timestamp letzter Status-TG
+    open_symbols_prev       = set()
+    scan_count              = 0
+    last_status_tg          = 0   # Timestamp letzter Status-TG
+    last_precision_refresh  = time.time()
 
     while True:
         try:
             scan_count += 1
+            # Precision alle 6h automatisch erneuern
+            if time.time() - last_precision_refresh > 21600:
+                load_contract_precision(force=True)
+                last_precision_refresh = time.time()
             now_str = datetime.now().strftime('%H:%M:%S')
             log.info(f"─── Scan #{scan_count} ───")
 
