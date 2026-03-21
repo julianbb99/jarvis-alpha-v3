@@ -174,16 +174,19 @@ def _request_with_retry(method, url, retries=3, **kwargs):
 
 # ── TELEGRAM ──────────────────────────────────────────────────────────────────
 
-def tg(msg: str, silent: bool = False):
+_tg_offset = 0   # letzter verarbeiteter Update-ID
+
+def tg(msg: str, silent: bool = False, chat_id: str = None):
     """Telegram-Nachricht senden. silent=True für nächtliche Meldungen."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_TOKEN or not target_chat:
         log.info(f"[TG] {msg[:120]}")
         return
     try:
         requests.post(
             f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
             json={
-                'chat_id':              TELEGRAM_CHAT_ID,
+                'chat_id':              target_chat,
                 'text':                 msg,
                 'parse_mode':           'HTML',
                 'disable_notification': silent,
@@ -1230,6 +1233,195 @@ def send_daily_report(mem, params, balance):
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  TELEGRAM KOMMANDOS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_cmd_mem    = None   # Referenz auf Memory (wird im run() gesetzt)
+_cmd_params = None
+
+def cmd_help(chat_id: str):
+    tg(
+        "🤖 <b>JARVIS ALPHA — Kommandos</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/status — Aktueller Bot-Status & Balance\n"
+        "/positions — Offene Positionen & PnL\n"
+        "/history — Letzte 10 Trades (heute)\n"
+        "/stats — Gesamt-Statistik\n"
+        "/help — Diese Hilfe",
+        chat_id=chat_id
+    )
+
+def cmd_status(chat_id: str):
+    try:
+        balance = get_balance()
+        positions = get_open_positions()
+        mem = _cmd_mem or {'trades': []}
+        open_count = len(positions)
+        all_closed = [t for t in mem.get('trades', []) if t.get('status') in ['win', 'loss']]
+        wins = len([t for t in all_closed if t['status'] == 'win'])
+        wr   = (wins / len(all_closed) * 100) if all_closed else 0
+        tg(
+            f"🤖 <b>JARVIS STATUS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Balance: <b>${balance:.2f}</b>\n"
+            f"📂 Positionen: {open_count}/{MAX_OPEN}\n"
+            f"📊 Win-Rate: {wr:.1f}% ({len(all_closed)} Trades)\n"
+            f"⚙️ Min-Score: {(_cmd_params or {}).get('min_score', 45)} | Brain v{(_cmd_params or {}).get('version', 1)}\n"
+            f"🔍 Scannt alle {SCAN_INTERVAL // 60} Min...",
+            chat_id=chat_id
+        )
+    except Exception as e:
+        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+
+def cmd_positions(chat_id: str):
+    try:
+        positions = get_open_positions()
+        if not positions:
+            tg("📭 Keine offenen Positionen", chat_id=chat_id)
+            return
+        msg = f"📂 <b>OFFENE POSITIONEN ({len(positions)}/{MAX_OPEN})</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        for p in positions:
+            sym   = p.get('symbol','').replace('USDT','')
+            side  = p.get('holdSide','').upper()
+            entry = float(p.get('openPriceAvg', 0))
+            mark  = float(p.get('markPrice', 0))
+            upnl  = float(p.get('unrealizedPL', 0))
+            mg    = float(p.get('marginSize', 1))
+            pct   = upnl / mg * 100 if mg > 0 else 0
+            e     = "🟢" if upnl > 0 else "🔴"
+            msg  += f"{e} <b>{sym}</b> {side}\n"
+            msg  += f"   Entry: ${entry:.4f} → Mark: ${mark:.4f}\n"
+            msg  += f"   PnL: ${upnl:+.3f} ({pct:+.1f}%)\n"
+        tg(msg, chat_id=chat_id)
+    except Exception as e:
+        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+
+def cmd_history(chat_id: str):
+    try:
+        mem = _cmd_mem or {'trades': []}
+        closed = [t for t in mem.get('trades', []) if t.get('status') in ['win', 'loss']]
+        if not closed:
+            tg("📭 Noch keine abgeschlossenen Trades", chat_id=chat_id)
+            return
+        # Letzte 10
+        recent = closed[-10:][::-1]
+        today  = datetime.utcnow().strftime('%Y-%m-%d')
+        msg = f"📋 <b>LETZTE {len(recent)} TRADES</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        total_pnl = 0
+        for t in recent:
+            sym    = t.get('symbol','').replace('USDT','')
+            sig_   = t.get('signal','')
+            status = t.get('status','')
+            pnl    = t.get('pnl', 0)
+            ts_str = t.get('closed_at', '')[-5:] or t.get('opened_at','')[-5:]
+            e      = "✅" if status == 'win' else "❌"
+            is_today = t.get('closed_at','').startswith(today) or t.get('opened_at','').startswith(today)
+            day_marker = " ·heute" if is_today else ""
+            pnl_str = f"${pnl:+.3f}" if pnl else ""
+            msg   += f"{e} {ts_str} | <b>{sym}</b> {sig_}{day_marker}"
+            if pnl_str:
+                msg += f" | {pnl_str}"
+            msg += "\n"
+            total_pnl += pnl
+        wins   = len([t for t in recent if t['status'] == 'win'])
+        losses = len(recent) - wins
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"✅ {wins} Wins  ❌ {losses} Losses"
+        if total_pnl:
+            msg += f"  |  💰 ${total_pnl:+.3f}"
+        tg(msg, chat_id=chat_id)
+    except Exception as e:
+        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+
+def cmd_stats(chat_id: str):
+    try:
+        mem    = _cmd_mem or {'trades': []}
+        trades = mem.get('trades', [])
+        today  = datetime.utcnow().strftime('%Y-%m-%d')
+
+        all_closed   = [t for t in trades if t.get('status') in ['win', 'loss']]
+        today_closed = [t for t in all_closed
+                        if t.get('closed_at','').startswith(today) or t.get('opened_at','').startswith(today)]
+
+        if not all_closed:
+            tg("📭 Noch keine Trades vorhanden", chat_id=chat_id)
+            return
+
+        wins_all   = len([t for t in all_closed if t['status'] == 'win'])
+        losses_all = len(all_closed) - wins_all
+        wr_all     = wins_all / len(all_closed) * 100
+        pnl_all    = sum(t.get('pnl', 0) for t in all_closed)
+
+        wins_today   = len([t for t in today_closed if t['status'] == 'win'])
+        losses_today = len(today_closed) - wins_today
+        pnl_today    = sum(t.get('pnl', 0) for t in today_closed)
+
+        # Bester / schlechtester Trade
+        best  = max(all_closed, key=lambda x: x.get('pnl', 0))
+        worst = min(all_closed, key=lambda x: x.get('pnl', 0))
+
+        balance = get_balance()
+
+        msg  = f"📊 <b>GESAMT-STATISTIK</b>\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"💰 Balance: <b>${balance:.2f}</b>\n\n"
+        today_short = today[-5:]
+        msg += f"<b>Heute ({today_short}):</b>\n"
+        msg += f"✅ {wins_today} Wins  ❌ {losses_today} Losses\n"
+        msg += f"💸 PnL heute: <b>${pnl_today:+.3f}</b>\n\n"
+        msg += f"<b>Gesamt ({len(all_closed)} Trades):</b>\n"
+        msg += f"📈 Win-Rate: <b>{wr_all:.1f}%</b> ({wins_all}W / {losses_all}L)\n"
+        msg += f"💰 Gesamt-PnL: <b>${pnl_all:+.3f}</b>\n\n"
+        msg += f"🏆 Bester Trade: {best.get('symbol','').replace('USDT','')} ${best.get('pnl',0):+.3f}\n"
+        msg += f"💀 Schlechtester: {worst.get('symbol','').replace('USDT','')} ${worst.get('pnl',0):+.3f}"
+        tg(msg, chat_id=chat_id)
+    except Exception as e:
+        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+
+def handle_command(text: str, chat_id: str):
+    cmd = text.strip().split()[0].lower()
+    log.info(f"📩 Kommando: {cmd} von {chat_id}")
+    if cmd in ('/help', '/start'):
+        cmd_help(chat_id)
+    elif cmd == '/status':
+        cmd_status(chat_id)
+    elif cmd == '/positions':
+        cmd_positions(chat_id)
+    elif cmd == '/history':
+        cmd_history(chat_id)
+    elif cmd == '/stats':
+        cmd_stats(chat_id)
+    else:
+        tg(f"❓ Unbekanntes Kommando: <code>{cmd}</code>\nTippe /help für alle Kommandos.", chat_id=chat_id)
+
+def start_command_polling():
+    """Polling-Thread: prüft alle 5s auf neue Telegram-Nachrichten."""
+    global _tg_offset
+    def _poll():
+        global _tg_offset
+        log.info("📡 Kommando-Polling gestartet")
+        while True:
+            try:
+                url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates'
+                r   = requests.get(url, params={'offset': _tg_offset, 'timeout': 5}, timeout=10)
+                updates = r.json().get('result', [])
+                for upd in updates:
+                    _tg_offset = upd['update_id'] + 1
+                    msg = upd.get('message') or upd.get('edited_message')
+                    if not msg:
+                        continue
+                    text    = msg.get('text', '')
+                    chat_id = str(msg.get('chat', {}).get('id', ''))
+                    if text.startswith('/'):
+                        handle_command(text, chat_id)
+            except Exception as e:
+                log.warning(f"Polling Fehler: {e}")
+            time.sleep(5)
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    return t
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1274,6 +1466,12 @@ def run():
 
     mem    = load_memory()
     params = load_params()
+
+    # Kommando-System starten
+    global _cmd_mem, _cmd_params
+    _cmd_mem    = mem
+    _cmd_params = params
+    start_command_polling()
 
     closed_all = [t for t in mem['trades'] if t.get('status') in ['win', 'loss']]
     wins_all   = len([t for t in closed_all if t['status'] == 'win'])
@@ -1445,6 +1643,7 @@ def run():
                         'partial_done': False,
                     })
                     save_memory(mem)
+                    _cmd_mem = mem
 
                     tg(
                         f"🚀 <b>TRADE ERÖFFNET</b>\n"
