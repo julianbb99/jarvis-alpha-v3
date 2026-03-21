@@ -119,7 +119,7 @@ LEVERAGE          = 20
 RISK_PCT          = 0.10       # Risiko pro Trade (% des Kapitals)
 MAX_OPEN          = 3          # Max gleichzeitige Positionen
 SCAN_INTERVAL     = 120        # Sekunden zwischen Scans
-STATUS_INTERVAL   = 1800       # Status-Update alle 30 Minuten (Sekunden)
+STATUS_INTERVAL   = 10800      # Status-Update alle 3h (nur stilles Lebenszeichen)
 TIMEFRAME         = '1H'
 TIMEFRAME_TREND   = '4H'       # Übergeordneter Trend-Filter
 MEMORY_FILE       = '/tmp/trade_memory.json'
@@ -1393,10 +1393,25 @@ def run():
                 # Alle 30 Min Status-Update auf Telegram (nur wenn kein Signal)
                 if time.time() - last_status_tg >= STATUS_INTERVAL:
                     try:
+                        # Offene Positionen PnL sammeln
+                        pos_summary = ''
+                        try:
+                            cur_pos = get_open_positions()
+                            for p in cur_pos:
+                                sym  = p.get('symbol','').replace('USDT','')
+                                side = p.get('holdSide','').upper()
+                                upnl = float(p.get('unrealizedPL', 0))
+                                mg   = float(p.get('marginSize', 1))
+                                pct  = upnl / mg * 100 if mg > 0 else 0
+                                e    = "🟢" if upnl > 0 else "🔴"
+                                pos_summary += f"\n{e} {sym} {side}: ${upnl:+.2f} ({pct:+.1f}%)"
+                        except:
+                            pass
                         tg(
-                            f"😴 <b>Kein Signal seit 30 Min</b>\n"
-                            f"💰 Balance: ${balance:.2f} | Offene Pos: {open_count}/{MAX_OPEN}\n"
-                            f"🔍 Bot scannt weiter alle {SCAN_INTERVAL // 60} Min...",
+                            f"🤖 <b>JARVIS — 3h Status</b>\n"
+                            f"💰 Balance: ${balance:.2f} | Pos: {open_count}/{MAX_OPEN}"
+                            + (pos_summary if pos_summary else "\n💤 Keine offenen Positionen") +
+                            f"\n🔍 Scannt weiter...",
                             silent=True
                         )
                     except Exception as e:
