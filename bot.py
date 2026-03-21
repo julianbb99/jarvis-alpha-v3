@@ -1641,7 +1641,7 @@ def run():
             pass
 
     print(f"\n{'=' * 62}")
-    print(f"  🤖 JARVIS ALPHA BOT V4 — Self-Learning Trading Bot")
+    print(f"  🤖 JARVIS ALPHA BOT V4.1 — Self-Learning Trading Bot")
     print(f"  {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
     print(f"  Leverage: {LEVERAGE}x | Risk: {RISK_PCT*100:.0f}%/Trade | MaxPos: {MAX_OPEN}")
     print(f"  Drawdown-Limit: {MAX_DRAWDOWN_PCT}% | Cooldown: {COOLDOWN_MINUTES}min")
