@@ -1033,9 +1033,138 @@ def set_tp2(symbol: str, side: str, tp2_price: float) -> bool:
     log.warning(f"  ⚠️ TP2 setzen fehlgeschlagen: {resp}")
     return False
 
+def set_sl(symbol: str, side: str, sl_price: float) -> bool:
+    """Aktualisiert den Stop-Loss einer offenen Position."""
+    hold_side = 'long' if side == 'LONG' else 'short'
+    body = {
+        'symbol':              symbol,
+        'productType':         'USDT-FUTURES',
+        'marginCoin':          'USDT',
+        'planType':            'profit_loss',
+        'stopLossPrice':       round_price(sl_price, symbol),
+        'stopLossTriggerType': 'mark_price',
+        'holdSide':            hold_side,
+    }
+    resp = api_post('/api/v2/mix/order/modify-tpsl-order', body)
+    if resp and resp.get('code') == '00000':
+        log.info(f"  🛡️ Trailing SL → ${round_price(sl_price, symbol)}")
+        return True
+    log.warning(f"  ⚠️ SL Update fehlgeschlagen: {resp.get('msg','?') if resp else 'None'}")
+    return False
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TRADE MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def check_trailing_stop(positions: list, mem: dict) -> dict:
+    """
+    Trailing Stop System:
+    - Phase 1 (≥50% zum TP): SL → Break-Even (Entry-Preis)
+    - Phase 2 (≥80% zum TP): SL folgt Preis mit 0.5×ATR Abstand
+    Verhindert dass Gewinn-Trades in Verluste kippen.
+    """
+    for pos in positions:
+        symbol    = pos.get('symbol', '')
+        hold_side = pos.get('holdSide', '')
+        side      = 'LONG' if hold_side == 'long' else 'SHORT'
+        entry     = float(pos.get('openPriceAvg', 0))
+        mark      = float(pos.get('markPrice', 0))
+        total_qty = float(pos.get('total', 0))
+
+        if total_qty <= 0 or entry <= 0 or mark <= 0:
+            continue
+
+        # Trade im Memory finden
+        open_trades = [t for t in mem.get('trades', []) if
+                       t.get('status') == 'open' and t.get('symbol') == symbol]
+        if not open_trades:
+            continue
+        t = open_trades[0]
+
+        tp  = float(t.get('tp', 0))
+        sl  = float(t.get('sl', 0))
+        atr = float(t.get('atr', 0))
+        if tp <= 0 or sl <= 0 or atr <= 0:
+            continue
+
+        # Fortschritt zum TP berechnen (0.0 = Entry, 1.0 = TP)
+        if side == 'LONG':
+            tp_dist_total = tp - entry
+            tp_dist_now   = mark - entry
+        else:
+            tp_dist_total = entry - tp
+            tp_dist_now   = entry - mark
+
+        if tp_dist_total <= 0:
+            continue
+
+        progress = tp_dist_now / tp_dist_total  # 0.0 → 1.0
+
+        trail_phase = t.get('trail_phase', 0)
+
+        # ── Phase 2: ≥80% zum TP → SL folgt Preis ────────────────────────────
+        if progress >= 0.80 and trail_phase < 2:
+            if side == 'LONG':
+                new_sl = mark - atr * 0.5
+                if new_sl > entry and new_sl > sl:  # Nur wenn besser als aktuell
+                    if set_sl(symbol, side, new_sl):
+                        t['sl'] = new_sl
+                        t['trail_phase'] = 2
+                        tg(
+                            f"🏃 <b>TRAILING STOP — {symbol.replace('USDT','')} {side}</b>\n"
+                            f"📈 {progress*100:.0f}% zum TP erreicht\n"
+                            f"🛡️ SL nachgezogen → ${round_price(new_sl, symbol)}\n"
+                            f"(0.5×ATR unter Mark-Preis)"
+                        )
+            else:
+                new_sl = mark + atr * 0.5
+                if new_sl < entry and new_sl < sl:
+                    if set_sl(symbol, side, new_sl):
+                        t['sl'] = new_sl
+                        t['trail_phase'] = 2
+                        tg(
+                            f"🏃 <b>TRAILING STOP — {symbol.replace('USDT','')} {side}</b>\n"
+                            f"📈 {progress*100:.0f}% zum TP erreicht\n"
+                            f"🛡️ SL nachgezogen → ${round_price(new_sl, symbol)}\n"
+                            f"(0.5×ATR über Mark-Preis)"
+                        )
+
+        # ── Phase 1: ≥50% zum TP → SL auf Break-Even ────────────────────────
+        elif progress >= 0.50 and trail_phase < 1:
+            be_sl = entry  # Break-Even
+            moved = False
+            if side == 'LONG' and be_sl > sl:
+                moved = set_sl(symbol, side, be_sl)
+            elif side == 'SHORT' and be_sl < sl:
+                moved = set_sl(symbol, side, be_sl)
+
+            if moved:
+                t['sl'] = be_sl
+                t['trail_phase'] = 1
+                tg(
+                    f"🔒 <b>BREAK-EVEN — {symbol.replace('USDT','')} {side}</b>\n"
+                    f"📈 {progress*100:.0f}% zum TP erreicht\n"
+                    f"🛡️ SL auf Entry gesetzt → ${round_price(be_sl, symbol)}\n"
+                    f"💎 Worst Case: ±0"
+                )
+
+        # ── Phase 2 aktiv: SL kontinuierlich nachziehen ───────────────────────
+        elif trail_phase == 2:
+            if side == 'LONG':
+                new_sl = mark - atr * 0.5
+                if new_sl > float(t.get('sl', 0)) + (atr * 0.1):  # Nur wenn +10% ATR besser
+                    if set_sl(symbol, side, new_sl):
+                        t['sl'] = new_sl
+                        log.info(f"  🏃 Trail SL nachgezogen: {symbol} → ${round_price(new_sl, symbol)}")
+            else:
+                new_sl = mark + atr * 0.5
+                if new_sl < float(t.get('sl', 0)) - (atr * 0.1):
+                    if set_sl(symbol, side, new_sl):
+                        t['sl'] = new_sl
+                        log.info(f"  🏃 Trail SL nachgezogen: {symbol} → ${round_price(new_sl, symbol)}")
+
+    return mem
 
 def check_partial_tp(positions: list, mem: dict):
     """
@@ -1785,6 +1914,11 @@ def run():
             # ── Partial TP Check ─────────────────────────────────────────
             if positions:
                 mem = check_partial_tp(positions, mem)
+                save_memory(mem)
+
+            # ── Trailing Stop Check ───────────────────────────────────────────
+            if positions:
+                mem = check_trailing_stop(positions, mem)
                 save_memory(mem)
 
             # ── Trade Timeout Check (max 2.5h Haltedauer) ────────────────────
