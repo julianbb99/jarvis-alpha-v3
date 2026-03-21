@@ -1335,6 +1335,76 @@ def check_trade_timeout(positions: list, mem: dict) -> dict:
 
     return mem
 
+
+def sync_memory_from_bitget(mem: dict, days: int = 1) -> dict:
+    """Lädt echte Bitget Fill-History und synct sie ins Memory.
+    Fügt nur Trades hinzu die noch nicht im Memory sind (keine Duplikate).
+    """
+    try:
+        start_ms = str(int(time.time() * 1000) - days * 86400000)
+        ts_h = str(int(time.time() * 1000))
+        path = f'/api/v2/mix/order/fill-history?productType=USDT-FUTURES&startTime={start_ms}'
+        sig  = sign(ts_h, 'GET', path, '')
+        hdrs = {
+            'ACCESS-KEY': BITGET_API_KEY, 'ACCESS-SIGN': sig,
+            'ACCESS-TIMESTAMP': ts_h, 'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+            'Content-Type': 'application/json',
+        }
+        r    = requests.get(BASE_URL + path, headers=hdrs, timeout=10)
+        fills = r.json().get('data', {}).get('fillList', [])
+
+        close_fills = [f for f in fills if f.get('tradeSide') == 'close']
+        orders = {}
+        for f in close_fills:
+            oid = f['orderId']
+            if oid not in orders:
+                orders[oid] = {
+                    'symbol': f['symbol'],
+                    'side':   f['side'],
+                    'profit': 0.0,
+                    'price':  float(f['price']),
+                    'time':   int(f['cTime']),
+                    'order_id': oid,
+                }
+            orders[oid]['profit'] += float(f.get('profit', 0))
+
+        existing_oids = {t.get('order_id') for t in mem.get('trades', []) if t.get('order_id')}
+        added = 0
+        for oid, t in orders.items():
+            if oid in existing_oids:
+                continue   # bereits im Memory
+            side_str = 'LONG' if t['side'] == 'sell' else 'SHORT'
+            won      = t['profit'] > 0
+            ts_str   = datetime.utcfromtimestamp(t['time'] / 1000).strftime('%Y-%m-%d %H:%M')
+            mem['trades'].append({
+                'symbol':     t['symbol'],
+                'signal':     side_str,
+                'entry_price': t['price'],
+                'tp': 0, 'sl': 0, 'atr': 0, 'rr': 0, 'score': 0,
+                'regime': 'synced', 'trend_4h': 'synced',
+                'reasons': 'bitget_sync',
+                'rsi': 0, 'atr_pct': 0, 'stoch_k': None,
+                'status':    'win' if won else 'loss',
+                'opened_at': ts_str,
+                'closed_at': ts_str,
+                'order_id':  oid,
+                'trade_size': 0,
+                'partial_done': False,
+                'pnl':  round(t['profit'], 4),
+            })
+            added += 1
+
+        if added > 0:
+            save_memory(mem)
+            log.info(f'📥 Memory-Sync: {added} neue Trades aus Bitget importiert')
+        else:
+            log.info(f'📥 Memory-Sync: alles aktuell ({len(orders)} Trades geprüft)')
+
+    except Exception as e:
+        log.warning(f'⚠️ Memory-Sync Fehler: {e}')
+
+    return mem
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM KOMMANDOS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1570,6 +1640,11 @@ def run():
     mem    = load_memory()
     params = load_params()
 
+    # Beim Start: echte Bitget-Trades der letzten 7 Tage ins Memory laden
+    log.info("🔄 Starte Memory-Sync mit Bitget...")
+    mem = sync_memory_from_bitget(mem, days=7)
+    log.info(f"📦 Memory nach Sync: {len([t for t in mem['trades'] if t.get('status') in ['win','loss']])} abgeschl. Trades")
+
     # Kommando-System starten
     global _cmd_mem, _cmd_params
     _cmd_mem    = mem
@@ -1627,6 +1702,11 @@ def run():
             if today != _last_report_day and hour >= DAILY_REPORT_HOUR:
                 send_daily_report(mem, params, balance)
                 _last_report_day = today
+
+            # ── Memory-Sync (täglich 1x, beim ersten Scan nach Mitternacht) ──
+            if today != _last_report_day:
+                mem = sync_memory_from_bitget(mem, days=2)
+                _cmd_mem = mem
 
             # ── Offene Positionen ─────────────────────────────────────────────
             positions    = get_open_positions()
