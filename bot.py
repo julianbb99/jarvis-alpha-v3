@@ -117,8 +117,8 @@ TELEGRAM_CHAT_ID  = os.getenv('NOTIFY_CHAT_ID', '')
 BASE_URL          = 'https://api.bitget.com'
 LEVERAGE          = 20
 RISK_PCT          = 0.10       # Risiko pro Trade (% des Kapitals)
-MAX_OPEN          = 3          # Max gleichzeitige Positionen
-SCAN_INTERVAL     = 120        # Sekunden zwischen Scans
+MAX_OPEN          = 5          # Max gleichzeitige Positionen
+SCAN_INTERVAL     = 60         # Sekunden zwischen Scans
 MAX_HOLD_HOURS    = 2.5         # Max Haltedauer in Stunden (dann Force-Close)
 STATUS_INTERVAL   = 10800      # Status-Update alle 3h (nur stilles Lebenszeichen)
 TIMEFRAME         = '1H'
@@ -153,7 +153,7 @@ MODES = {
         'scan_interval':  120,
         'tp_mult':        2.0,
         'sl_mult':        1.5,
-        'min_score':      55,
+        'min_score':      45,
         'atr_trail':      0.5,
     },
     'scalp': {
@@ -410,8 +410,8 @@ def save_memory(mem):
 def load_params():
     defaults = {
         'min_score':     45,   # war 55 — aggressiver
-        'rsi_long':      33,   # häufiger triggern
-        'rsi_short':     67,   # häufiger triggern
+        'rsi_long':      35,   # mehr Coins triggern
+        'rsi_short':     65,   # mehr Coins triggern
         'rsi_extreme_l': 30,   # war 28
         'rsi_extreme_s': 70,   # war 72
         'tp_atr_mult':   1.8,  # war 1.5 — besserer TP
@@ -671,10 +671,10 @@ def get_liquid_coins():
         for c in r.json().get('data', []):
             vol = float(c.get('usdtVolume', 0))
             sym = c.get('symbol', '')
-            if vol >= 800_000 and sym not in BLACKLIST and sym.endswith('USDT'):
+            if vol >= 300_000 and sym not in BLACKLIST and sym.endswith('USDT'):
                 coins.append((sym, vol))
         coins.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in coins[:60]]
+        return [s for s, _ in coins[:80]]
     except Exception as e:
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
@@ -701,7 +701,7 @@ def get_top_movers(n=20) -> list:
             # Intraday-Range als Volatilitäts-Proxy
             intraday_range = (high24 - low24) / low24 * 100 if low24 > 0 else 0
             # Min 500k Vol + min 4% Bewegung ODER 8% Range
-            if vol >= 500_000 and (chg >= 4.0 or intraday_range >= 8.0) and sym not in BLACKLIST and sym.endswith('USDT'):
+            if vol >= 200_000 and (chg >= 3.0 or intraday_range >= 5.0) and sym not in BLACKLIST and sym.endswith('USDT'):
                 movers.append((sym, chg, vol, intraday_range))
         # Sortiere nach Intraday-Range (volatilste zuerst)
         movers.sort(key=lambda x: x[3], reverse=True)
@@ -960,7 +960,8 @@ def analyze_coin(symbol, params):
     #    sonst: MACD-Gegenwind bei starkem Momentum blocken
     rsi_extreme_override = (signal == 'SHORT' and r > 82) or (signal == 'LONG' and r < 18)
     if not rsi_extreme_override and macd is not None and macd_sig is not None and macd_hist is not None:
-        threshold = 0.002 * price if atr_pct > 3.0 else 0.0005 * price
+        # MACD nur bei sehr starkem Gegenwind blocken
+        threshold = 0.005 * price if atr_pct > 3.0 else 0.002 * price
         if signal == 'LONG'  and macd_hist < -threshold:
             return None
         if signal == 'SHORT' and macd_hist >  threshold:
@@ -969,7 +970,7 @@ def analyze_coin(symbol, params):
         score += 10; reasons.append('RSI Extrem Override')
 
     # 3) BB: bei hoher Volatilität (ATR >3%) ist BB-Distanz größer — anpassen
-    bb_max_dist = params.get('bb_near', 0.04) * 1.5
+    bb_max_dist = params.get('bb_near', 0.04) * 2.0  # lockerer
     if atr_pct > 3.0:
         bb_max_dist = 0.12   # volatile Coins haben größere Bänder
     elif atr_pct > 2.0:
@@ -984,7 +985,7 @@ def analyze_coin(symbol, params):
             return None
 
     # 4) Min-Score
-    if score < 48:
+    if score < 38:
         return None
 
     # ── TP/SL Berechnung ──────────────────────────────────────────────────────
@@ -2133,7 +2134,7 @@ def run():
 
             # ── Coin-Scan ─────────────────────────────────────────────────────
             liquid  = get_liquid_coins()
-            movers  = get_top_movers(15)
+            movers  = get_top_movers(25)
             # Kombiniere: liquid + movers, ohne Duplikate
             coins_set = list(dict.fromkeys(liquid + movers))
             coins = coins_set
@@ -2188,7 +2189,7 @@ def run():
             # (nicht nur die die über min_score waren — Score-Filter schon passiert)
             if slots_free > 0 and len(signals) < slots_free:
                 # Fallback: nur Trades mit Score ≥60 UND RR ≥1.1 (keine schlechten Trades)
-                fallback_min = max(60, get_mode()['min_score'])
+                fallback_min = max(45, get_mode()['min_score'])
                 extra = [r for r in all_scan_results
                          if r['score'] >= fallback_min
                          and r.get('rr', 0) >= 1.1
