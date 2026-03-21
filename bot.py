@@ -190,6 +190,9 @@ def set_mode(mode_key: str) -> bool:
 
 # ── GLOBALS (Runtime State) ───────────────────────────────────────────────────
 _cooldown_map   = {}          # symbol → datetime der letzten Position
+_last_scan_time = None        # Zeitpunkt des letzten Scans
+_last_scan_results = []       # Top-Signale des letzten Scans
+_last_scan_count = 0          # Anzahl gescannter Coins
 _start_balance  = None        # Balance beim Start (für Drawdown-Tracking)
 _last_report_day = None       # Tag des letzten Daily Reports
 _paused          = False      # Drawdown-Pausierung
@@ -1744,20 +1747,53 @@ def cmd_status(chat_id: str):
         all_closed = [t for t in mem.get('trades', []) if t.get('status') in ['win', 'loss']]
         wins = len([t for t in all_closed if t['status'] == 'win'])
         wr   = (wins / len(all_closed) * 100) if all_closed else 0
+
+        # Letzter Scan
+        if _last_scan_time:
+            elapsed = int((datetime.now() - _last_scan_time).total_seconds())
+            scan_ago = f"{elapsed}s her"
+        else:
+            scan_ago = "noch kein Scan"
+
+        # Cooldowns
+        active_cds = []
+        for sym, dt in _cooldown_map.items():
+            mins_left = COOLDOWN_MINUTES - (datetime.now() - dt).total_seconds() / 60
+            if mins_left > 0:
+                active_cds.append(f"{sym.replace('USDT','')} ({mins_left:.0f}min)")
+        cd_str = ', '.join(active_cds) if active_cds else 'keine'
+
+        # Top Scan-Ergebnisse
+        top_str = ''
+        if _last_scan_results:
+            top_lines = []
+            for r in _last_scan_results[:3]:
+                top_lines.append(f"  • {r['name']} {r['signal']} Score:{r['score']} RSI:{r['rsi']:.0f}")
+            top_str = '\n🔎 Top letzte Scan:\n' + '\n'.join(top_lines)
+
+        # Offene Positionen
+        pos_str = ''
+        for p in positions:
+            sym  = p['symbol'].replace('USDT','')
+            side = p.get('holdSide','').upper()
+            upnl = float(p.get('unrealizedPL', 0))
+            pos_str += f"\n  • {sym} {side} | PnL: ${upnl:+.2f}"
+
         tg(
             f"🤖 <b>JARVIS STATUS</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 Balance: <b>${balance:.2f}</b>\n"
-            f"📂 Positionen: {open_count}/{MAX_OPEN}\n"
+            f"📂 Positionen: {open_count}/{MAX_OPEN}{pos_str}\n"
             f"📊 Win-Rate: {wr:.1f}% ({len(all_closed)} Trades)\n"
-            f"⚙️ Min-Score: {(_cmd_params or {}).get('min_score', 45)} | Brain v{(_cmd_params or {}).get('version', 1)}\n"
-            f"🔍 Scannt alle {SCAN_INTERVAL // 60} Min...",
+            f"⏱️ Letzter Scan: {scan_ago} ({_last_scan_count} Coins)\n"
+            f"⏸️ Cooldowns: {cd_str}\n"
+            f"⚙️ Min-Score: {(_cmd_params or {}).get('min_score', 45)} | Cooldown: {COOLDOWN_MINUTES}min"
+            f"{top_str}",
             chat_id=chat_id
         )
     except Exception as e:
         log.warning(f"[cmd_status] Fehler: {e}")
-        if "is not defined" not in str(e):
-            tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
+        tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
 def cmd_positions(chat_id: str):
     try:
@@ -2102,6 +2138,9 @@ def run():
             coins_set = list(dict.fromkeys(liquid + movers))
             coins = coins_set
             log.info(f"🔍 Scanne {len(coins)} Coins (Liquid: {len(liquid)}, Movers: {len([m for m in movers if m not in liquid])})...")
+            global _last_scan_time, _last_scan_count
+            _last_scan_time  = datetime.now()
+            _last_scan_count = len(coins)
 
             signals          = []
             all_scan_results = []
@@ -2129,6 +2168,10 @@ def run():
                             f"RR:{result['rr']:.2f} Regime:{result['regime']} "
                             f"4H:{result['trend_4h']}"
                         )
+
+            # Top-Signale für /status speichern
+            global _last_scan_results
+            _last_scan_results = sorted(all_scan_results, key=lambda x: x['score'], reverse=True)[:5]
 
             # Dashboard Push
             push_scan_to_dashboard(
