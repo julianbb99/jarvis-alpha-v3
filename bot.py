@@ -1473,7 +1473,9 @@ def cmd_status(chat_id: str):
             chat_id=chat_id
         )
     except Exception as e:
-        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+        log.warning(f"[cmd_status] Fehler: {e}")
+        if "is not defined" not in str(e):
+            tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
 def cmd_positions(chat_id: str):
     try:
@@ -1496,7 +1498,9 @@ def cmd_positions(chat_id: str):
             msg  += f"   PnL: ${upnl:+.3f} ({pct:+.1f}%)\n"
         tg(msg, chat_id=chat_id)
     except Exception as e:
-        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+        log.warning(f"[cmd_positions] Fehler: {e}")
+        if "is not defined" not in str(e):
+            tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
 def cmd_history(chat_id: str):
     try:
@@ -1533,7 +1537,9 @@ def cmd_history(chat_id: str):
             msg += f"  |  💰 ${total_pnl:+.3f}"
         tg(msg, chat_id=chat_id)
     except Exception as e:
-        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+        log.warning(f"[cmd_history] Fehler: {e}")
+        if "is not defined" not in str(e):
+            tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
 def cmd_stats(chat_id: str):
     try:
@@ -1578,7 +1584,9 @@ def cmd_stats(chat_id: str):
         msg += f"💀 Schlechtester: {worst.get('symbol','').replace('USDT','')} ${worst.get('pnl',0):+.3f}"
         tg(msg, chat_id=chat_id)
     except Exception as e:
-        tg(f"❌ Fehler: {e}", chat_id=chat_id)
+        log.warning(f"[cmd_stats] Fehler: {e}")
+        if "is not defined" not in str(e):
+            tg(f"❌ Fehler: {str(e)[:100]}", chat_id=chat_id)
 
 def handle_command(text: str, chat_id: str):
     cmd = text.strip().split()[0].lower()
@@ -1920,12 +1928,18 @@ def run():
             tg("⛔ <b>JARVIS ALPHA V4 gestoppt</b>")
             break
         except NameError as e:
-            # Passiert wenn alter Render-Container noch läuft — ignorieren
             log.warning(f"[NameError ignoriert] {e}")
             time.sleep(30)
         except Exception as e:
-            log.error(f"[MAIN LOOP ERROR] {e}", exc_info=True)
-            tg(f"⚠️ <b>Bot Fehler:</b> {str(e)[:200]}")
+            err_str = str(e)
+            log.error(f"[MAIN LOOP ERROR] {err_str}", exc_info=True)
+            # Keine TG-Spam bei bekannten harmlosen Fehlern
+            skip_tg = any(x in err_str for x in [
+                'MAX_HOLD_HOURS', 'MAX_OPEN', 'SCAN_INTERVAL', 'LEVERAGE',
+                'is not defined', 'NoneType', 'division by zero'
+            ])
+            if not skip_tg:
+                tg(f"⚠️ <b>Bot Fehler:</b> {err_str[:200]}")
             time.sleep(30)
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
@@ -1942,11 +1956,17 @@ if __name__ == '__main__':
             break
         except Exception as e:
             retry += 1
-            log.error(f"Kritischer Fehler #{retry}: {e}", exc_info=True)
-            try:
-                tg(f"🔄 Bot-Neustart nach Fehler: {str(e)[:150]}")
-            except:
-                pass
+            err_str = str(e)
+            log.error(f"Kritischer Fehler #{retry}: {err_str}", exc_info=True)
+            skip_tg = any(x in err_str for x in [
+                'MAX_HOLD_HOURS', 'MAX_OPEN', 'SCAN_INTERVAL', 'LEVERAGE',
+                'is not defined', 'NoneType'
+            ])
+            if not skip_tg:
+                try:
+                    tg(f"🔄 Bot-Neustart nach Fehler: {err_str[:150]}")
+                except:
+                    pass
             wait = min(30 * retry, 300)
             log.info(f"Neustart in {wait}s...")
             time.sleep(wait)
