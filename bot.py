@@ -1196,40 +1196,70 @@ def push_scan_to_dashboard(results, scan_time):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def send_daily_report(mem, params, balance):
-    """Täglicher Performance-Report via Telegram."""
-    trades  = mem.get('trades', [])
-    today   = datetime.utcnow().strftime('%Y-%m-%d')
-    eq      = load_equity()
-    dd_pct  = eq.get('current_drawdown', 0)
+    """Täglicher Performance-Report — lädt Trades direkt von Bitget (UTC heute)."""
+    today  = datetime.utcnow().strftime('%Y-%m-%d')
+    eq     = load_equity()
+    dd_pct = eq.get('current_drawdown', 0)
 
-    # Trades von heute (closed_at ODER opened_at beginnt mit heute)
-    today_trades = [
-        t for t in trades
-        if (t.get('closed_at', '').startswith(today) or t.get('opened_at', '').startswith(today))
-        and t.get('status') in ['win', 'loss']
-    ]
-    today_wins   = len([t for t in today_trades if t['status'] == 'win'])
-    today_losses = len([t for t in today_trades if t['status'] == 'loss'])
-    today_pnl    = sum(t.get('pnl', 0) for t in today_trades)   # Dollar, nicht %
+    # Direkt von Bitget: Fills seit Mitternacht UTC heute
+    today_trades = []
+    try:
+        midnight_utc = int(datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+        ts_h  = str(int(time.time() * 1000))
+        path  = f'/api/v2/mix/order/fill-history?productType=USDT-FUTURES&startTime={midnight_utc}'
+        sig   = sign(ts_h, 'GET', path, '')
+        hdrs  = {
+            'ACCESS-KEY': BITGET_API_KEY, 'ACCESS-SIGN': sig,
+            'ACCESS-TIMESTAMP': ts_h, 'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+            'Content-Type': 'application/json',
+        }
+        fills = requests.get(BASE_URL + path, headers=hdrs, timeout=10).json()
+        fills = fills.get('data', {}).get('fillList', [])
+        close_fills = [f for f in fills if f.get('tradeSide') == 'close']
+        orders = {}
+        for f in close_fills:
+            oid = f['orderId']
+            if oid not in orders:
+                orders[oid] = {
+                    'symbol': f['symbol'],
+                    'side':   'LONG' if f['side'] == 'sell' else 'SHORT',
+                    'profit': 0.0,
+                    'time':   int(f['cTime']),
+                }
+            orders[oid]['profit'] += float(f.get('profit', 0))
+        today_trades = sorted(orders.values(), key=lambda x: x['time'])
+    except Exception as e:
+        log.warning(f'⚠️ Report Bitget-Fetch Fehler: {e}')
+        # Fallback: aus Memory
+        trades = mem.get('trades', [])
+        for t in trades:
+            if (t.get('closed_at','').startswith(today) or t.get('opened_at','').startswith(today))                     and t.get('status') in ['win','loss']:
+                today_trades.append({
+                    'symbol': t['symbol'], 'side': t['signal'],
+                    'profit': t.get('pnl', 0), 'time': 0
+                })
 
-    # Gesamt-Statistik
-    all_closed = [t for t in trades if t.get('status') in ['win', 'loss']]
-    all_wins   = len([t for t in all_closed if t['status'] == 'win'])
-    all_wr     = (all_wins / len(all_closed) * 100) if all_closed else 0
-    all_pnl    = sum(t.get('pnl', 0) for t in all_closed)
+    today_wins   = len([t for t in today_trades if t['profit'] > 0])
+    today_losses = len([t for t in today_trades if t['profit'] <= 0])
+    today_pnl    = sum(t['profit'] for t in today_trades)
 
     # Offene Positionen
-    open_trades = [t for t in trades if t.get('status') == 'open']
+    open_trades = [t for t in mem.get('trades',[]) if t.get('status') == 'open']
+    open_count  = len(get_open_positions())
 
-    # Letzte 3 Trades für Übersicht
-    recent = sorted(today_trades, key=lambda x: x.get('closed_at',''))[-3:]
+    # Win-Rate gesamt (aus Memory)
+    all_closed = [t for t in mem.get('trades',[]) if t.get('status') in ['win','loss']]
+    all_wins   = len([t for t in all_closed if t['status'] == 'win'])
+    all_wr     = (all_wins / len(all_closed) * 100) if all_closed else 0
+
+    # Letzte Trades heute (max 5)
+    recent = today_trades[-5:][::-1]
     recent_lines = ''
-    for t in reversed(recent):
-        sym  = t.get('symbol','').replace('USDT','')
-        e    = '✅' if t['status'] == 'win' else '❌'
-        pnl  = t.get('pnl', 0)
-        ts   = t.get('closed_at','')[-5:] or t.get('opened_at','')[-5:]
-        recent_lines += f'{e} {ts} {sym} ${pnl:+.3f}\n'
+    for t in recent:
+        sym = t['symbol'].replace('USDT','')
+        e   = '✅' if t['profit'] > 0 else '❌'
+        ts_ = datetime.utcfromtimestamp(t['time']/1000).strftime('%H:%M') if t['time'] else '--:--'
+        recent_lines += f'{e} {ts_} {sym} ${t["profit"]:+.3f}\n'
 
     tg(
         f"📅 <b>TAGES-REPORT — {today}</b>\n"
@@ -1239,11 +1269,9 @@ def send_daily_report(mem, params, balance):
         f"\n<b>Heute ({today_wins + today_losses} Trades):</b>\n"
         f"✅ Wins: {today_wins}  ❌ Losses: {today_losses}\n"
         f"💸 Tages-PnL: <b>${today_pnl:+.3f}</b>\n"
-        + (f"{recent_lines}" if recent_lines else '')
-        + f"\n<b>Gesamt:</b>\n"
-        f"📊 Win-Rate: {all_wr:.1f}% ({len(all_closed)} Trades)\n"
-        f"💰 Gesamt-PnL: <b>${all_pnl:+.3f}</b>\n"
-        f"🔓 Offen: {len(open_trades)} Position(en)\n"
+        + (recent_lines if recent_lines else '')
+        + f"\n<b>Gesamt Win-Rate:</b> {all_wr:.1f}% ({len(all_closed)} Trades)\n"
+        f"🔓 Offen: {open_count} Position(en)\n"
         f"🧠 Brain v{params['version']} | Min-Score: {params['min_score']}"
     )
 
@@ -1644,6 +1672,10 @@ def run():
     log.info("🔄 Starte Memory-Sync mit Bitget...")
     mem = sync_memory_from_bitget(mem, days=7)
     log.info(f"📦 Memory nach Sync: {len([t for t in mem['trades'] if t.get('status') in ['win','loss']])} abgeschl. Trades")
+
+    # _last_report_day auf heute setzen — kein sofortiger Report beim Neustart
+    global _last_report_day
+    _last_report_day = datetime.utcnow().strftime('%Y-%m-%d')
 
     # Kommando-System starten
     global _cmd_mem, _cmd_params
