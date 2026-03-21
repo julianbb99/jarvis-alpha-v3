@@ -5,7 +5,7 @@ JARVIS ALPHA BOT V4 — Self-Learning Multi-Coin Trading Bot
 NEU in V4:
   • Täglicher Performance-Report (08:00 UTC)
   • Drawdown-Schutz: Bot pausiert bei >15% Verlust
-  • Cooldown: Kein Re-Entry in gleichen Coin innerhalb 2h
+  • Cooldown: Kein Re-Entry in gleichen Coin innerhalb 10min
   • MACD-Konfirmation als zusätzlicher Indikator
   • 4H-Trend-Filter: Nur Trades in Richtung des 4H-Trends
   • Trailing Stop Logik (simuliert via Memory-Monitoring)
@@ -133,7 +133,7 @@ EQUITY_FILE       = '/tmp/equity_curve.json'
 
 MIN_RR            = 1.1        # Mindest Risk/Reward Ratio
 MAX_DRAWDOWN_PCT  = 15.0       # Bot pausiert bei >X% Drawdown
-COOLDOWN_MINUTES  = 120        # Kein Re-Entry in selben Coin für X Minuten
+COOLDOWN_MINUTES  = 10         # Kein Re-Entry in selben Coin für X Minuten
 MAX_MEMORY_TRADES = 500        # Maximale gespeicherte Trades
 DAILY_REPORT_HOUR = 8          # Uhrzeit für täglichen Report (UTC)
 
@@ -149,7 +149,7 @@ MODES = {
         'timeframe':      '1H',
         'trend_tf':       '4H',
         'max_hold_hours': 2.5,
-        'cooldown_min':   120,
+        'cooldown_min':   10,
         'scan_interval':  120,
         'tp_mult':        2.0,
         'sl_mult':        1.5,
@@ -161,7 +161,7 @@ MODES = {
         'timeframe':      '15m',
         'trend_tf':       '1H',
         'max_hold_hours': 0.75,   # 45 Minuten
-        'cooldown_min':   30,
+        'cooldown_min':   10,
         'scan_interval':  60,
         'tp_mult':        1.2,
         'sl_mult':        0.8,
@@ -407,8 +407,8 @@ def save_memory(mem):
 def load_params():
     defaults = {
         'min_score':     45,   # war 55 — aggressiver
-        'rsi_long':      32,   # war 30 — häufiger triggern
-        'rsi_short':     68,   # war 70
+        'rsi_long':      33,   # häufiger triggern
+        'rsi_short':     67,   # häufiger triggern
         'rsi_extreme_l': 30,   # war 28
         'rsi_extreme_s': 70,   # war 72
         'tp_atr_mult':   1.8,  # war 1.5 — besserer TP
@@ -676,8 +676,8 @@ def get_liquid_coins():
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
 
-def get_top_movers(n=15) -> list:
-    """Holt Top Gewinner & Verlierer der letzten 24h — volatile Mean-Reversion Kandidaten."""
+def get_top_movers(n=20) -> list:
+    """Holt Top Mover der letzten 24h — volatile Mean-Reversion Kandidaten."""
     try:
         r = _request_with_retry('GET', f'{BASE_URL}/api/v2/mix/market/tickers?productType=USDT-FUTURES')
         if r is None:
@@ -688,18 +688,23 @@ def get_top_movers(n=15) -> list:
             sym     = c.get('symbol', '')
             vol     = float(c.get('usdtVolume', 0))
             chg_str = c.get('change24h', '0') or c.get('priceChangePercent', '0') or '0'
+            high24  = float(c.get('high24h', 0) or 0)
+            low24   = float(c.get('low24h', 1) or 1)
+            price   = float(c.get('lastPr', 1) or 1)
             try:
-                chg = abs(float(chg_str)) * 100  # in Prozent
+                chg = abs(float(chg_str)) * 100
             except:
                 chg = 0.0
-            # Min 1M Volumen + min 5% Bewegung in 24h
-            if vol >= 1e6 and chg >= 5.0 and sym not in BLACKLIST and sym.endswith('USDT'):
-                movers.append((sym, chg, vol))
-        # Sortiere nach Bewegung absteigend
-        movers.sort(key=lambda x: x[1], reverse=True)
-        top = [s for s, _, _ in movers[:n]]
+            # Intraday-Range als Volatilitäts-Proxy
+            intraday_range = (high24 - low24) / low24 * 100 if low24 > 0 else 0
+            # Min 500k Vol + min 4% Bewegung ODER 8% Range
+            if vol >= 500_000 and (chg >= 4.0 or intraday_range >= 8.0) and sym not in BLACKLIST and sym.endswith('USDT'):
+                movers.append((sym, chg, vol, intraday_range))
+        # Sortiere nach Intraday-Range (volatilste zuerst)
+        movers.sort(key=lambda x: x[3], reverse=True)
+        top = [s for s, _, _, _ in movers[:n]]
         if top:
-            log.info(f"📈 Top Movers ({len(top)}): {', '.join(s.replace('USDT','') for s in top[:8])}...")
+            log.info(f"📈 Top Movers ({len(top)}): {', '.join(s.replace('USDT','') for s in top[:10])}...")
         return top
     except Exception as e:
         log.warning(f"get_top_movers Fehler: {e}")
@@ -928,7 +933,9 @@ def analyze_coin(symbol, params):
         elif vol_ratio < 0.4: score -= 8;  reasons.append('Volu schwach')
 
     # ── ATR / Volatilität ─────────────────────────────────────────────────────
-    if atr_pct > 2.0:   score += 15; reasons.append(f'Vola {atr_pct:.1f}%')
+    if atr_pct > 5.0:   score += 35; reasons.append(f'🔥 HiVola {atr_pct:.1f}%')   # sehr volatil → schneller TP
+    elif atr_pct > 3.0: score += 25; reasons.append(f'Vola {atr_pct:.1f}%')
+    elif atr_pct > 2.0: score += 15; reasons.append(f'Vola {atr_pct:.1f}%')
     elif atr_pct > 1.0: score += 8;  reasons.append(f'Vola {atr_pct:.1f}%')
     elif atr_pct < params['min_atr_pct']:
         return None
@@ -946,16 +953,24 @@ def analyze_coin(symbol, params):
     if signal == 'SHORT' and trend_4h == 'up':
         score -= 15
 
-    # 2) MACD nur blocken wenn STARK gegen Trade (nicht bei kleinem Gegenwind)
-    if macd is not None and macd_sig is not None and macd_hist is not None:
-        threshold = 0.0005 * price   # nur bei starkem Momentum blocken
+    # 2) MACD-Block: bei RSI-Extrem (>82 / <18) → MACD überschreiben (echter Reversal)
+    #    sonst: MACD-Gegenwind bei starkem Momentum blocken
+    rsi_extreme_override = (signal == 'SHORT' and r > 82) or (signal == 'LONG' and r < 18)
+    if not rsi_extreme_override and macd is not None and macd_sig is not None and macd_hist is not None:
+        threshold = 0.002 * price if atr_pct > 3.0 else 0.0005 * price
         if signal == 'LONG'  and macd_hist < -threshold:
             return None
         if signal == 'SHORT' and macd_hist >  threshold:
             return None
+    if rsi_extreme_override:
+        score += 10; reasons.append('RSI Extrem Override')
 
-    # 3) BB: Preis darf nicht zu weit vom Band sein
-    bb_max_dist = params.get('bb_near', 0.04) * 1.5   # etwas lockerer als vorher
+    # 3) BB: bei hoher Volatilität (ATR >3%) ist BB-Distanz größer — anpassen
+    bb_max_dist = params.get('bb_near', 0.04) * 1.5
+    if atr_pct > 3.0:
+        bb_max_dist = 0.12   # volatile Coins haben größere Bänder
+    elif atr_pct > 2.0:
+        bb_max_dist = 0.08
     if signal == 'LONG':
         bb_dist = (price - bbl_v) / price
         if bb_dist > bb_max_dist:
@@ -970,6 +985,14 @@ def analyze_coin(symbol, params):
         return None
 
     # ── TP/SL Berechnung ──────────────────────────────────────────────────────
+    # Für sehr volatile Coins: schnellerer TP (kleiner Multiplier → TP schneller erreicht)
+    if atr_pct > 4.0:
+        tp_mult = min(tp_mult, 1.3)   # schneller TP bei hoher Vola
+        sl_mult = min(sl_mult, 1.0)   # engeres SL
+    elif atr_pct > 2.5:
+        tp_mult = min(tp_mult, 1.6)
+        sl_mult = min(sl_mult, 1.2)
+
     if signal == 'LONG':
         tp = price + at * tp_mult
         sl = price - at * sl_mult
@@ -979,8 +1002,8 @@ def analyze_coin(symbol, params):
 
     rr = abs(tp - price) / abs(sl - price) if abs(sl - price) > 0 else 0
 
-    # 5) RR muss mindestens 1.1 sein
-    if rr < 1.1:
+    # 5) RR muss mindestens 1.0 sein
+    if rr < 1.0:
         return None
 
     return {
