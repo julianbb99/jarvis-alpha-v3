@@ -78,7 +78,7 @@ MEMORY_FILE       = '/tmp/trade_memory.json'
 PARAMS_FILE       = '/tmp/learned_params.json'
 EQUITY_FILE       = '/tmp/equity_curve.json'
 
-MIN_RR            = 1.3        # Mindest Risk/Reward Ratio
+MIN_RR            = 1.1        # Mindest Risk/Reward Ratio
 MAX_DRAWDOWN_PCT  = 15.0       # Bot pausiert bei >X% Drawdown
 COOLDOWN_MINUTES  = 120        # Kein Re-Entry in selben Coin für X Minuten
 MAX_MEMORY_TRADES = 500        # Maximale gespeicherte Trades
@@ -251,23 +251,23 @@ def save_memory(mem):
 
 def load_params():
     defaults = {
-        'min_score':     55,
-        'rsi_long':      30,
-        'rsi_short':     70,
-        'rsi_extreme_l': 28,
-        'rsi_extreme_s': 72,
-        'tp_atr_mult':   1.5,
-        'sl_atr_mult':   2.0,
-        'min_atr_pct':   0.3,
-        'bb_tight':      0.005,
-        'bb_near':       0.015,
+        'min_score':     45,   # war 55 — aggressiver
+        'rsi_long':      32,   # war 30 — häufiger triggern
+        'rsi_short':     68,   # war 70
+        'rsi_extreme_l': 30,   # war 28
+        'rsi_extreme_s': 70,   # war 72
+        'tp_atr_mult':   1.8,  # war 1.5 — besserer TP
+        'sl_atr_mult':   1.5,  # war 2.0 — engerer SL, besseres RR
+        'min_atr_pct':   0.2,  # war 0.3 — mehr Coins zugelassen
+        'bb_tight':      0.010, # war 0.005 — 1% statt 0.5%
+        'bb_near':       0.025, # war 0.015 — 2.5% statt 1.5%
         'min_rr':        MIN_RR,
         'regime_scores': {
-            'trending_up':   {'score_bonus': 5,   'tp_mult': 1.8, 'sl_mult': 1.8},
-            'trending_down': {'score_bonus': 5,   'tp_mult': 1.8, 'sl_mult': 1.8},
-            'ranging':       {'score_bonus': 10,  'tp_mult': 1.3, 'sl_mult': 1.5},
-            'volatile':      {'score_bonus': -5,  'tp_mult': 2.0, 'sl_mult': 2.5},
-            'dead':          {'score_bonus': -15, 'tp_mult': 1.2, 'sl_mult': 1.2},
+            'trending_up':   {'score_bonus': 8,   'tp_mult': 2.0, 'sl_mult': 1.5},
+            'trending_down': {'score_bonus': 8,   'tp_mult': 2.0, 'sl_mult': 1.5},
+            'ranging':       {'score_bonus': 12,  'tp_mult': 1.5, 'sl_mult': 1.3},
+            'volatile':      {'score_bonus': 0,   'tp_mult': 2.2, 'sl_mult': 2.0},
+            'dead':          {'score_bonus': -8,  'tp_mult': 1.2, 'sl_mult': 1.2},
         },
         'version':      1,
         'total_trades': 0,
@@ -284,6 +284,9 @@ def load_params():
                         defaults['regime_scores'][k].update(v)
                 del saved['regime_scores']
             defaults.update(saved)
+            # Sicherheitsnetz: min_score darf niemals über 50 starten
+            if defaults.get('min_score', 55) > 50:
+                defaults['min_score'] = 45
     except:
         pass
     return defaults
@@ -657,18 +660,22 @@ def analyze_coin(symbol, params):
     elif rp > params['rsi_short'] and r <= params['rsi_short']:
         score += 45; signal = 'SHORT'; reasons.append(f'RSI Drop {rp:.0f}→{r:.0f}')
     elif r < params['rsi_extreme_l']:
-        score += 25; signal = 'LONG';  reasons.append(f'RSI oversold {r:.0f}')
+        score += 35; signal = 'LONG';  reasons.append(f'RSI oversold {r:.0f}')  # war 25
     elif r > params['rsi_extreme_s']:
-        score += 25; signal = 'SHORT'; reasons.append(f'RSI overbought {r:.0f}')
+        score += 35; signal = 'SHORT'; reasons.append(f'RSI overbought {r:.0f}')  # war 25
+    elif r < params['rsi_long'] + 5 and rp < r:  # RSI steigt aus überverkaufter Zone
+        score += 20; signal = 'LONG';  reasons.append(f'RSI erholt {r:.0f}')
+    elif r > params['rsi_short'] - 5 and rp > r:  # RSI fällt aus überkaufter Zone
+        score += 20; signal = 'SHORT'; reasons.append(f'RSI schwächt {r:.0f}')
     else:
         return None
 
     # ── 4H-Trend-Filter ───────────────────────────────────────────────────────
     trend_4h = get_4h_trend(symbol)
     if signal == 'LONG'  and trend_4h == 'down':
-        score -= 20; reasons.append('⚠️ 4H-Trend gegen Trade')
+        score -= 10; reasons.append('⚠️ 4H-Trend gegen Trade')
     elif signal == 'SHORT' and trend_4h == 'up':
-        score -= 20; reasons.append('⚠️ 4H-Trend gegen Trade')
+        score -= 10; reasons.append('⚠️ 4H-Trend gegen Trade')
     elif signal == 'LONG'  and trend_4h == 'up':
         score += 15; reasons.append('4H-Trend ✅')
     elif signal == 'SHORT' and trend_4h == 'down':
@@ -710,9 +717,9 @@ def analyze_coin(symbol, params):
     if len(vo) >= 10:
         avg_vol = sum(vo[-10:-1]) / 9
         vol_ratio = vo[-1] / avg_vol if avg_vol > 0 else 1
-        if vol_ratio > 1.5:   score += 15; reasons.append(f'Volu +{vol_ratio:.1f}x')
-        elif vol_ratio > 1.3: score += 10; reasons.append(f'Volu +{vol_ratio:.1f}x')
-        elif vol_ratio < 0.5: score -= 10; reasons.append('Volu schwach')
+        if vol_ratio > 1.3:   score += 15; reasons.append(f'Volu +{vol_ratio:.1f}x')
+        elif vol_ratio > 1.1: score += 8;  reasons.append(f'Volu +{vol_ratio:.1f}x')
+        elif vol_ratio < 0.4: score -= 8;  reasons.append('Volu schwach')
 
     # ── ATR / Volatilität ─────────────────────────────────────────────────────
     if atr_pct > 2.0:   score += 15; reasons.append(f'Vola {atr_pct:.1f}%')
@@ -788,8 +795,26 @@ def set_leverage(symbol, lev):
             'holdSide':    side,
         })
 
+def round_price(price: float) -> str:
+    """Rundet Preis auf coin-typische Präzision — behält trailing zeros für Bitget."""
+    if price >= 1000:   decimals = 1
+    elif price >= 100:  decimals = 2
+    elif price >= 10:   decimals = 3
+    elif price >= 1:    decimals = 4
+    elif price >= 0.1:  decimals = 4
+    elif price >= 0.01: decimals = 5
+    else:               decimals = 6
+    return f"{price:.{decimals}f}"
+
+def round_qty(qty: float, price: float) -> str:
+    """Rundet Menge — für günstige Coins ganzzahlig (Bitget volumePlace=0)."""
+    if price >= 100:    return f"{qty:.2f}"
+    elif price >= 10:   return f"{qty:.1f}"
+    elif price >= 1:    return str(int(qty))
+    else:               return str(int(qty))
+
 def place_order(symbol, side, size_usdt, tp, sl, price):
-    qty = round(size_usdt * LEVERAGE / price, 4)
+    qty = size_usdt * LEVERAGE / price
     if qty <= 0:
         return None
     set_leverage(symbol, LEVERAGE)
@@ -799,12 +824,12 @@ def place_order(symbol, side, size_usdt, tp, sl, price):
         'productType':            'USDT-FUTURES',
         'marginMode':             'isolated',
         'marginCoin':             'USDT',
-        'size':                   str(qty),
+        'size':                   round_qty(qty, price),
         'side':                   order_side,
         'tradeSide':              'open',
         'orderType':              'market',
-        'presetStopSurplusPrice': str(round(tp, 6)),
-        'presetStopLossPrice':    str(round(sl, 6)),
+        'presetStopSurplusPrice': round_price(tp),
+        'presetStopLossPrice':    round_price(sl),
     }
     return api_post('/api/v2/mix/order/place-order', body)
 
@@ -960,6 +985,17 @@ def send_daily_report(mem, params, balance):
 
 def run():
     global _start_balance, _last_report_day
+    # Alte params.json löschen damit neue Defaults greifen
+    import os as _os
+    if _os.path.exists(PARAMS_FILE):
+        try:
+            import json as _j
+            old = _j.load(open(PARAMS_FILE))
+            if old.get('min_score', 0) > 50:
+                _os.remove(PARAMS_FILE)
+                log.info("🔄 Alte params.json zurückgesetzt (min_score war zu hoch)")
+        except:
+            pass
 
     print(f"\n{'=' * 62}")
     print(f"  🤖 JARVIS ALPHA BOT V4 — Self-Learning Trading Bot")
