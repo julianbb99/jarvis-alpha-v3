@@ -1000,8 +1000,9 @@ def partial_close(symbol: str, side: str, close_qty: float) -> bool:
     body = {
         'symbol':      symbol,
         'productType': 'USDT-FUTURES',
+        'marginMode':  'isolated',
         'marginCoin':  'USDT',
-        'size':        round_qty(close_qty, symbol),
+        'size':        str(round_qty(close_qty, symbol)),
         'side':        close_side,
         'tradeSide':   'close',
         'orderType':   'market',
