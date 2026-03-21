@@ -1281,6 +1281,7 @@ def check_trade_timeout(positions: list, mem: dict) -> dict:
     if not positions:
         return mem
 
+    _max_hold = globals().get('_max_hold', 2.5)  # Failsafe: direkt aus globals()
     now      = datetime.utcnow()
     trades   = mem.get('trades', [])
     closed_syms = []
@@ -1312,7 +1313,7 @@ def check_trade_timeout(positions: list, mem: dict) -> dict:
 
         age_hours = (now - opened_dt).total_seconds() / 3600
 
-        if age_hours >= MAX_HOLD_HOURS:
+        if age_hours >= _max_hold:
             log.info(f"⏰ TIMEOUT: {symbol} {side} | Alter: {age_hours:.1f}h | uPnL: ${upnl:+.3f}")
 
             # Market Close
@@ -1918,6 +1919,10 @@ def run():
             print("\n\n⛔ Bot gestoppt.")
             tg("⛔ <b>JARVIS ALPHA V4 gestoppt</b>")
             break
+        except NameError as e:
+            # Passiert wenn alter Render-Container noch läuft — ignorieren
+            log.warning(f"[NameError ignoriert] {e}")
+            time.sleep(30)
         except Exception as e:
             log.error(f"[MAIN LOOP ERROR] {e}", exc_info=True)
             tg(f"⚠️ <b>Bot Fehler:</b> {str(e)[:200]}")
