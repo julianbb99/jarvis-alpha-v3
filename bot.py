@@ -512,10 +512,11 @@ def update_equity(balance: float):
         _paused = True
         log.warning(f"🚨 DRAWDOWN-SCHUTZ aktiviert! DD: {dd_pct:.1f}% (Limit: {MAX_DRAWDOWN_PCT}%)")
         tg(
-            f"🚨 <b>DRAWDOWN-SCHUTZ AKTIV!</b>\n"
-            f"Aktueller Drawdown: <b>{dd_pct:.1f}%</b>\n"
-            f"Limit: {MAX_DRAWDOWN_PCT}%\n"
-            f"💤 Bot pausiert neue Trades bis Erholung"
+            f"🚨 <b>DRAWDOWN-SCHUTZ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📉 DD jetzt   <b>{dd_pct:.1f}%</b>\n"
+            f"🛡️ Limit      {MAX_DRAWDOWN_PCT}%\n"
+            f"💤 Keine neuen Trades bis Erholung"
         )
     elif dd_pct < MAX_DRAWDOWN_PCT * 0.7 and _paused:
         _paused = False
@@ -1274,9 +1275,10 @@ def check_trailing_stop(positions: list, mem: dict) -> dict:
                 t['sl'] = be_sl
                 t['trail_phase'] = 1
                 tg(
-                    f"🔒 <b>BREAK-EVEN — {symbol.replace('USDT','')} {side}</b>\n"
-                    f"📈 {progress*100:.0f}% zum TP erreicht\n"
-                    f"🛡️ SL auf Entry gesetzt → ${round_price(be_sl, symbol)}\n"
+                    f"🔒 <b>BREAK-EVEN  {symbol.replace('USDT','')} {side}</b>\n"
+                    f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                    f"📈 {progress*100:.0f}% zum TP\n"
+                    f"🛡️ SL → <code>${round_price(be_sl, symbol)}</code>\n"
                     f"💎 Worst Case: ±0"
                 )
 
@@ -1429,11 +1431,16 @@ def check_closed_trades(mem, params, open_symbols_prev, open_symbols_now):
 
                     lev_pnl = round(pnl_pct * LEVERAGE, 1)
                     icon    = '✅ WIN' if t['status'] == 'win' else '❌ LOSS'
+                    outcome = t['status']
+                    res_icon = "💚" if outcome == 'win' else "🔴"
                     tg(
-                        f"{icon} <b>{sym.replace('USDT','')}</b> {signal}\n"
-                        f"Entry: ${entry:.4f} → Exit: ${current_price:.4f}\n"
-                        f"PnL: {pnl_pct:+.2f}% ({lev_pnl:+.1f}% mit {LEVERAGE}x)\n"
-                        f"Regime: {t.get('regime','?')} | Score: {t.get('score','?')}"
+                        f"{icon} <b>{sym.replace('USDT','')} {signal} — {'GEWINN' if outcome=='win' else 'VERLUST'}</b>\n"
+                        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                        f"📌 Entry  <code>${entry:.4f}</code>\n"
+                        f"🏁 Exit   <code>${current_price:.4f}</code>\n"
+                        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                        f"{res_icon} PnL  <b>{lev_pnl:+.1f}%</b>  ({pnl_pct:+.2f}% ohne Hebel)\n"
+                        f"📊 Score {t.get('score','?')}  •  Regime {t.get('regime','?')}"
                     )
                     changed = True
                 except Exception as e:
@@ -1552,18 +1559,19 @@ def send_daily_report(mem, params, balance):
         ts_ = datetime.utcfromtimestamp(t['time']/1000).strftime('%H:%M') if t['time'] else '--:--'
         recent_lines += f'{e} {ts_} {sym} ${t["profit"]:+.3f}\n'
 
+    day_icon = "🟢" if today_pnl >= 0 else "🔴"
     tg(
-        f"📅 <b>TAGES-REPORT — {today}</b>\n"
+        f"📅 <b>TAGES-REPORT  {today}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Balance: <b>${balance:.2f}</b>\n"
-        f"📉 Drawdown: {dd_pct:.1f}% (Max {MAX_DRAWDOWN_PCT}%)\n"
-        f"\n<b>Heute ({today_wins + today_losses} Trades):</b>\n"
-        f"✅ Wins: {today_wins}  ❌ Losses: {today_losses}\n"
-        f"💸 Tages-PnL: <b>${today_pnl:+.3f}</b>\n"
+        f"💰 Balance     <b>${balance:.2f}</b>\n"
+        f"{day_icon} Tages-PnL   <b>${today_pnl:+.2f}</b>\n"
+        f"📉 Drawdown    {dd_pct:.1f}%  (Limit {MAX_DRAWDOWN_PCT}%)\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ Wins    <b>{today_wins}</b>    ❌ Losses  <b>{today_losses}</b>\n"
+        f"📊 WR heute  <b>{(today_wins/(today_wins+today_losses)*100) if (today_wins+today_losses)>0 else 0:.0f}%</b>  •  Gesamt <b>{all_wr:.1f}%</b>\n"
         + (recent_lines if recent_lines else '')
-        + f"\n<b>Gesamt Win-Rate:</b> {all_wr:.1f}% ({len(all_closed)} Trades)\n"
-        f"🔓 Offen: {open_count} Position(en)\n"
-        f"🧠 Brain v{params['version']} | Min-Score: {params['min_score']}"
+        + f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔓 Offen  {open_count}  •  🧠 Score ≥{params['min_score']}"
     )
 
 
@@ -1633,10 +1641,11 @@ def check_trade_timeout(positions: list, mem: dict) -> dict:
                         break
 
                 tg(
-                    f"⏰ <b>TIMEOUT CLOSE — {symbol.replace('USDT','')} {side}</b>\n"
-                    f"🕐 Offen seit: {age_hours:.1f}h (Max: {MAX_HOLD_HOURS}h)\n"
-                    f"💰 PnL: {e} <b>${upnl:+.3f}</b> ({pnl_pct:+.1f}%)\n"
-                    f"📌 Entry: ${entry:.4f} → Exit: ${mark:.4f}"
+                    f"⏰ <b>TIMEOUT  {symbol.replace('USDT','')} {side}</b>\n"
+                    f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                    f"🕐 Offen  {age_hours:.1f}h / {MAX_HOLD_HOURS}h\n"
+                    f"📌 Entry <code>${entry:.4f}</code> → Exit <code>${mark:.4f}</code>\n"
+                    f"{'💚' if upnl>=0 else '🔴'} PnL  <b>${upnl:+.3f}</b>  ({pnl_pct:+.1f}%)"
                 )
             else:
                 log.error(f"❌ Timeout Close fehlgeschlagen: {symbol}")
@@ -1728,14 +1737,15 @@ _cmd_params = None
 def cmd_help(chat_id: str):
     mode_label = get_mode()['label']
     tg(
-        "🤖 <b>JARVIS ALPHA — Kommandos</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "/status — Aktueller Bot-Status & Balance\n"
-        "/positions — Offene Positionen & PnL\n"
-        "/history — Letzte 10 Trades (heute)\n"
-        "/stats — Gesamt-Statistik\n"
-        f"/mode — Modus: {mode_label}\n"
-        "/help — Diese Hilfe",
+        f"⚡ <b>JARVIS ALPHA</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"/status     Bot-Status & Balance\n"
+        f"/positions  Offene Trades & PnL\n"
+        f"/history    Letzte 10 Trades\n"
+        f"/stats      Gesamt-Statistik\n"
+        f"/mode       Modus: <b>{mode_label}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"/help       Diese Übersicht",
         chat_id=chat_id
     )
 
@@ -1781,14 +1791,15 @@ def cmd_status(chat_id: str):
             pos_str += f"\n  • {sym} {side} | PnL: ${upnl:+.2f}"
 
         tg(
-            f"🤖 <b>JARVIS STATUS</b>\n"
+            f"🤖 <b>JARVIS ALPHA</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Balance: <b>${balance:.2f}</b>\n"
-            f"📂 Positionen: {open_count}/{MAX_OPEN}{pos_str}\n"
-            f"📊 Win-Rate: {wr:.1f}% ({len(all_closed)} Trades)\n"
-            f"⏱️ Letzter Scan: {scan_ago} ({_last_scan_count} Coins)\n"
-            f"⏸️ Cooldowns: {cd_str}\n"
-            f"⚙️ Min-Score: {(_cmd_params or {}).get('min_score', 45)} | Cooldown: {COOLDOWN_MINUTES}min"
+            f"💰 Balance    <b>${balance:.2f}</b>\n"
+            f"📂 Positionen  {open_count}/{MAX_OPEN}{pos_str}\n"
+            f"📊 Win-Rate    <b>{wr:.1f}%</b>  ({len(all_closed)} Trades)\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏱️ Scan       {scan_ago}  ({_last_scan_count} Coins)\n"
+            f"⏸️ Cooldowns  {cd_str}\n"
+            f"⚙️ Score ≥{(_cmd_params or {}).get('min_score', 40)}  •  CD {COOLDOWN_MINUTES}min"
             f"{top_str}",
             chat_id=chat_id
         )
@@ -2053,13 +2064,14 @@ def run():
             save_equity(eq)
 
     tg(
-        f"🤖 <b>JARVIS ALPHA V4 gestartet</b>\n"
-        f"🧠 Brain v{params['version']} | Trades gesamt: {len(closed_all)}\n"
-        f"📊 Win-Rate: {wr_all:.1f}% | Min-Score: {params['min_score']}\n"
-        f"⚙️ {LEVERAGE}x Leverage | {RISK_PCT*100:.0f}% Risiko/Trade\n"
-        f"🛡️ Drawdown-Limit: {MAX_DRAWDOWN_PCT}% | Cooldown: {COOLDOWN_MINUTES}min\n"
-        f"💰 Start-Balance: ${_start_balance:.2f}\n"
-        f"🔍 Scanning alle {SCAN_INTERVAL // 60} Min..."
+        f"⚡ <b>JARVIS ALPHA — ONLINE</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Balance     <b>${_start_balance:.2f}</b>\n"
+        f"📊 Win-Rate    <b>{wr_all:.1f}%</b>  ({len(closed_all)} Trades)\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚙️ {LEVERAGE}x  •  {RISK_PCT*100:.0f}% Risiko  •  Score ≥{params['min_score']}\n"
+        f"🛡️ DD-Limit {MAX_DRAWDOWN_PCT}%  •  CD {COOLDOWN_MINUTES}min\n"
+        f"🔍 Scannt alle {SCAN_INTERVAL}s  •  bis zu {MAX_OPEN} Trades"
     )
 
     open_symbols_prev       = set()
@@ -2256,14 +2268,15 @@ def run():
                     save_memory(mem)
                     _cmd_mem = mem
 
+                    direction_icon = "🔴" if sig['signal'] == 'SHORT' else "🟢"
                     tg(
-                        f"🚀 <b>TRADE ERÖFFNET</b>\n"
-                        f"Coin: <b>{sig['name']}</b> {sig['signal']}\n"
-                        f"Entry: ${sig['price']:.4f} | Score: {sig['score']}\n"
-                        f"TP: ${sig['tp']:.4f} | SL: ${sig['sl']:.4f}\n"
-                        f"RR: {sig['rr']:.2f} | Regime: {sig['regime']}\n"
-                        f"4H-Trend: {sig['trend_4h']} | Kapital: ${trade_size:.2f}\n"
-                        f"📋 {sig['reasons']}"
+                        f"{direction_icon} <b>{sig['name']} {sig['signal']}</b>\n"
+                        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                        f"💵 Entry   <code>${sig['price']:.4f}</code>\n"
+                        f"🎯 TP      <code>${sig['tp']:.4f}</code>\n"
+                        f"🛑 SL      <code>${sig['sl']:.4f}</code>\n"
+                        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                        f"📊 Score <b>{sig['score']}</b>  •  RR <b>{sig['rr']:.2f}</b>  •  💰 ${trade_size:.2f}"
                     )
                     traded += 1
                 else:
@@ -2291,10 +2304,10 @@ def run():
                         except:
                             pass
                         tg(
-                            f"🤖 <b>JARVIS — 3h Status</b>\n"
-                            f"💰 Balance: ${balance:.2f} | Pos: {open_count}/{MAX_OPEN}"
+                            f"📡 <b>JARVIS — Live</b>\n"
+                            f"💰 <b>${balance:.2f}</b>  •  📂 {open_count}/{MAX_OPEN} Pos"
                             + (pos_summary if pos_summary else "\n💤 Keine offenen Positionen") +
-                            f"\n🔍 Scannt weiter...",
+                            f"\n🔍 Läuft...",
                             silent=True
                         )
                     except Exception as e:
