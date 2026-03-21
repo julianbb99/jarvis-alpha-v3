@@ -628,6 +628,36 @@ def get_liquid_coins():
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
 
+def get_top_movers(n=15) -> list:
+    """Holt Top Gewinner & Verlierer der letzten 24h — volatile Mean-Reversion Kandidaten."""
+    try:
+        r = _request_with_retry('GET', f'{BASE_URL}/api/v2/mix/market/tickers?productType=USDT-FUTURES')
+        if r is None:
+            return []
+        tickers = r.json().get('data', [])
+        movers = []
+        for c in tickers:
+            sym     = c.get('symbol', '')
+            vol     = float(c.get('usdtVolume', 0))
+            chg_str = c.get('change24h', '0') or c.get('priceChangePercent', '0') or '0'
+            try:
+                chg = abs(float(chg_str)) * 100  # in Prozent
+            except:
+                chg = 0.0
+            # Min 1M Volumen + min 5% Bewegung in 24h
+            if vol >= 1e6 and chg >= 5.0 and sym not in BLACKLIST and sym.endswith('USDT'):
+                movers.append((sym, chg, vol))
+        # Sortiere nach Bewegung absteigend
+        movers.sort(key=lambda x: x[1], reverse=True)
+        top = [s for s, _, _ in movers[:n]]
+        if top:
+            log.info(f"📈 Top Movers ({len(top)}): {', '.join(s.replace('USDT','') for s in top[:8])}...")
+        return top
+    except Exception as e:
+        log.warning(f"get_top_movers Fehler: {e}")
+        return []
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MARKET REGIME
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1324,14 +1354,7 @@ def check_trade_timeout(positions: list, mem: dict) -> dict:
                 log.warning(f"⚠️ Timeout: {symbol} qty=0, überspringe")
                 continue
 
-            ok = place_order(
-                symbol    = symbol,
-                side      = close_side,
-                trade_side= 'close',
-                size      = qty,
-                order_type= 'market',
-                reduce_only= True,
-            )
+            ok = partial_close(symbol, side, qty)
 
             if ok:
                 closed_syms.append(symbol)
@@ -1779,8 +1802,12 @@ def run():
                 continue
 
             # ── Coin-Scan ─────────────────────────────────────────────────────
-            coins = get_liquid_coins()
-            log.info(f"🔍 Scanne {len(coins)} Coins...")
+            liquid  = get_liquid_coins()
+            movers  = get_top_movers(15)
+            # Kombiniere: liquid + movers, ohne Duplikate
+            coins_set = list(dict.fromkeys(liquid + movers))
+            coins = coins_set
+            log.info(f"🔍 Scanne {len(coins)} Coins (Liquid: {len(liquid)}, Movers: {len([m for m in movers if m not in liquid])})...")
 
             signals          = []
             all_scan_results = []
