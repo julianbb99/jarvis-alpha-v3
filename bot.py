@@ -48,6 +48,31 @@ def start_health_server():
     return None
 
 import requests, json, time, hmac, hashlib, base64, logging
+
+# Coin-spezifische Präzision (wird beim Start geladen)
+_PRICE_PLACES  = {}  # symbol → int (Dezimalstellen Preis)
+_QTY_PLACES    = {}  # symbol → int (Dezimalstellen Menge)
+
+def load_contract_precision():
+    """Lädt pricePlace + volumePlace für alle Coins von Bitget beim Start."""
+    global _PRICE_PLACES, _QTY_PLACES
+    try:
+        ts   = str(int(time.time() * 1000))
+        path = '/api/v2/mix/market/contracts?productType=USDT-FUTURES'
+        sig  = sign(ts, 'GET', path, '')
+        hdrs = {
+            'ACCESS-KEY': BITGET_API_KEY, 'ACCESS-SIGN': sig,
+            'ACCESS-TIMESTAMP': ts, 'ACCESS-PASSPHRASE': BITGET_PASSPHRASE,
+            'Content-Type': 'application/json',
+        }
+        r = requests.get(BASE_URL + path, headers=hdrs, timeout=15)
+        for c in r.json().get('data', []):
+            sym = c.get('symbol','')
+            _PRICE_PLACES[sym] = int(c.get('pricePlace', 4))
+            _QTY_PLACES[sym]   = int(c.get('volumePlace', 2))
+        log.info(f"✅ Precision geladen für {len(_PRICE_PLACES)} Kontrakte")
+    except Exception as e:
+        log.warning(f"⚠️ Precision-Laden fehlgeschlagen: {e}")
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 
@@ -205,6 +230,7 @@ def validate_startup() -> bool:
         return False
 
     log.info("✅ API-Verbindung OK")
+    load_contract_precision()
 
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         try:
@@ -795,23 +821,24 @@ def set_leverage(symbol, lev):
             'holdSide':    side,
         })
 
-def round_price(price: float) -> str:
-    """Rundet Preis auf coin-typische Präzision — behält trailing zeros für Bitget."""
-    if price >= 1000:   decimals = 1
-    elif price >= 100:  decimals = 2
-    elif price >= 10:   decimals = 3
-    elif price >= 1:    decimals = 4
-    elif price >= 0.1:  decimals = 4
-    elif price >= 0.01: decimals = 5
-    else:               decimals = 6
+def round_price(price: float, symbol: str = '') -> str:
+    """Rundet Preis exakt auf Bitget pricePlace Dezimalstellen."""
+    decimals = _PRICE_PLACES.get(symbol, None)
+    if decimals is None:
+        # Fallback wenn Precision noch nicht geladen
+        if price >= 1000:   decimals = 1
+        elif price >= 100:  decimals = 2
+        elif price >= 10:   decimals = 3
+        elif price >= 1:    decimals = 4
+        elif price >= 0.1:  decimals = 4
+        elif price >= 0.01: decimals = 5
+        else:               decimals = 6
     return f"{price:.{decimals}f}"
 
-def round_qty(qty: float, price: float) -> str:
-    """Rundet Menge — für günstige Coins ganzzahlig (Bitget volumePlace=0)."""
-    if price >= 100:    return f"{qty:.2f}"
-    elif price >= 10:   return f"{qty:.1f}"
-    elif price >= 1:    return str(int(qty))
-    else:               return str(int(qty))
+def round_qty(qty: float, symbol: str = '') -> str:
+    """Rundet Menge exakt auf Bitget volumePlace Dezimalstellen."""
+    decimals = _QTY_PLACES.get(symbol, 2)
+    return f"{qty:.{decimals}f}"
 
 def place_order(symbol, side, size_usdt, tp, sl, price):
     qty = size_usdt * LEVERAGE / price
@@ -824,12 +851,12 @@ def place_order(symbol, side, size_usdt, tp, sl, price):
         'productType':            'USDT-FUTURES',
         'marginMode':             'isolated',
         'marginCoin':             'USDT',
-        'size':                   round_qty(qty, price),
+        'size':                   round_qty(qty, symbol),
         'side':                   order_side,
         'tradeSide':              'open',
         'orderType':              'market',
-        'presetStopSurplusPrice': round_price(tp),
-        'presetStopLossPrice':    round_price(sl),
+        'presetStopSurplusPrice': round_price(tp, symbol),
+        'presetStopLossPrice':    round_price(sl, symbol),
     }
     return api_post('/api/v2/mix/order/place-order', body)
 
