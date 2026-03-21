@@ -620,10 +620,10 @@ def get_liquid_coins():
         for c in r.json().get('data', []):
             vol = float(c.get('usdtVolume', 0))
             sym = c.get('symbol', '')
-            if vol >= 5e6 and sym not in BLACKLIST and sym.endswith('USDT'):
+            if vol >= 2e6 and sym not in BLACKLIST and sym.endswith('USDT'):
                 coins.append((sym, vol))
         coins.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in coins[:30]]
+        return [s for s, _ in coins[:45]]
     except Exception as e:
         log.error(f"get_liquid_coins Fehler: {e}")
         return []
