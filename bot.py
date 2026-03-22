@@ -223,6 +223,13 @@ def get_min_qty(symbol):
             return float(c.get('minTradeNum', 1)), float(c.get('pricePlace', 2))
     return None, None
 
+def round_price(price, dp):
+    """Preis auf korrekte Dezimalstellen runden."""
+    try:
+        return round(price, int(dp))
+    except:
+        return price
+
 def place_order(symbol, side, usdt_size, price):
     set_leverage(symbol)
     min_qty, price_dp = get_min_qty(symbol)
@@ -231,21 +238,35 @@ def place_order(symbol, side, usdt_size, price):
     qty = round((usdt_size * LEVERAGE) / price, 4)
     qty = max(qty, min_qty)
 
+    # TP und SL Preise berechnen
+    if side == 'LONG':
+        tp_price = round_price(price * (1 + TP_PCT), price_dp or 4)
+        sl_price = round_price(price * (1 - SL_PCT), price_dp or 4)
+    else:
+        tp_price = round_price(price * (1 - TP_PCT), price_dp or 4)
+        sl_price = round_price(price * (1 + SL_PCT), price_dp or 4)
+
+    log.info(f"Order: {symbol} {side} qty={qty} TP={tp_price} SL={sl_price}")
+
     d = post('/api/v2/mix/order/place-order', {
-        'symbol':      symbol,
-        'productType': 'USDT-FUTURES',
-        'marginMode':  'isolated',
-        'marginCoin':  'USDT',
-        'size':        str(qty),
-        'side':        'buy' if side == 'LONG' else 'sell',
-        'tradeSide':   'open',
-        'orderType':   'market',
-        'force':       'gtc',
+        'symbol':                  symbol,
+        'productType':             'USDT-FUTURES',
+        'marginMode':              'isolated',
+        'marginCoin':              'USDT',
+        'size':                    str(qty),
+        'side':                    'buy' if side == 'LONG' else 'sell',
+        'tradeSide':               'open',
+        'orderType':               'market',
+        'force':                   'gtc',
+        'presetTakeProfitPrice':   str(tp_price),
+        'presetStopLossPrice':     str(sl_price),
     })
     if d.get('code') == '00000':
-        return d.get('data', {}).get('orderId')
+        oid = d.get('data', {}).get('orderId')
+        log.info(f"✅ Order platziert: {oid} | TP={tp_price} SL={sl_price}")
+        return oid
     else:
-        log.warning(f"Order Fehler {symbol}: {d.get('msg')}")
+        log.warning(f"Order Fehler {symbol}: {d.get('msg')} | Code: {d.get('code')}")
         return None
 
 def close_position(symbol, side, qty):
