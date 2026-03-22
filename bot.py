@@ -133,7 +133,7 @@ EQUITY_FILE       = '/tmp/equity_curve.json'
 
 MIN_RR            = 1.1        # Mindest Risk/Reward Ratio
 MAX_DRAWDOWN_PCT  = 15.0       # Bot pausiert bei >X% Drawdown
-COOLDOWN_MINUTES  = 60         # Kein Re-Entry in selben Coin für X Minuten
+COOLDOWN_MINUTES  = 20         # Kein Re-Entry in selben Coin für X Minuten
 MAX_MEMORY_TRADES = 500        # Maximale gespeicherte Trades
 DAILY_REPORT_HOUR = 8          # Uhrzeit für täglichen Report (UTC)
 
@@ -148,23 +148,23 @@ MODES = {
         'label':          '📊 Swing (1H)',
         'timeframe':      '1H',
         'trend_tf':       '4H',
-        'max_hold_hours': 4.0,
-        'cooldown_min':   60,
-        'scan_interval':  120,
-        'tp_mult':        3.0,
-        'sl_mult':        2.5,
-        'min_score':      55,
+        'max_hold_hours': 1.5,
+        'cooldown_min':   20,
+        'scan_interval':  60,
+        'tp_mult':        1.5,
+        'sl_mult':        1.0,
+        'min_score':      60,
         'atr_trail':      0.5,
     },
     'scalp': {
         'label':          '⚡ Scalp (15min)',
         'timeframe':      '15m',
         'trend_tf':       '1H',
-        'max_hold_hours': 1.5,
-        'cooldown_min':   60,
-        'scan_interval':  60,
-        'tp_mult':        2.0,
-        'sl_mult':        1.5,
+        'max_hold_hours': 0.5,
+        'cooldown_min':   15,
+        'scan_interval':  30,
+        'tp_mult':        1.2,
+        'sl_mult':        0.8,
         'min_score':      60,
         'atr_trail':      0.3,
     },
@@ -512,13 +512,13 @@ def save_memory(mem):
 
 def load_params():
     defaults = {
-        'min_score':     55,   # konservativer — nur klare Signale
+        'min_score':     60,   # nur saubere Setups
         'rsi_long':      35,   # mehr Coins triggern
         'rsi_short':     65,   # mehr Coins triggern
         'rsi_extreme_l': 30,   # war 28
         'rsi_extreme_s': 70,   # war 72
-        'tp_atr_mult':   3.0,  # RR mindestens 1:1.2
-        'sl_atr_mult':   2.5,  # weiter SL — verhindert frühzeitigen Stop
+        'tp_atr_mult':   1.5,  # schneller TP — $3-5 Profit reichen
+        'sl_atr_mult':   1.0,  # eng — schneller Exit wenn falsch
         'min_atr_pct':   0.2,  # war 0.3 — mehr Coins zugelassen
         'bb_tight':      0.010, # war 0.005 — 1% statt 0.5%
         'bb_near':       0.025, # war 0.015 — 2.5% statt 1.5%
@@ -546,7 +546,7 @@ def load_params():
                 del b44_saved['regime_scores']
             defaults.update(b44_saved)
             if defaults.get('min_score', 55) > 50:
-                defaults['min_score'] = 55
+                defaults['min_score'] = 60
             log.info(f'🧠 Params aus Base44 geladen (v{defaults.get("version",1)})')
             return defaults
         except:
@@ -563,7 +563,7 @@ def load_params():
             defaults.update(saved)
             # Sicherheitsnetz: min_score darf niemals über 50 starten
             if defaults.get('min_score', 55) > 50:
-                defaults['min_score'] = 55
+                defaults['min_score'] = 60
     except:
         pass
     return defaults
@@ -900,7 +900,7 @@ def learn_from_trades(mem, params):
     # ATR-Multiplikator anpassen
     avg_pnl = sum(t.get('pnl_pct', 0) for t in recent) / len(recent)
     if avg_pnl < -1.0:
-        params['sl_atr_mult'] = max(2.0, params.get('sl_atr_mult', 2.5) - 0.1)
+        params['sl_atr_mult'] = max(0.8, params.get('sl_atr_mult', 1.0) - 0.1)
     elif avg_pnl > 2.0:
         params['tp_atr_mult'] = min(3.0, params.get('tp_atr_mult', 1.5) + 0.1)
 
@@ -2551,7 +2551,7 @@ def run():
             # (nicht nur die die über min_score waren — Score-Filter schon passiert)
             if slots_free > 0 and len(signals) < slots_free:
                 # Fallback: nur Trades mit Score ≥60 UND RR ≥1.1 (keine schlechten Trades)
-                fallback_min = max(55, get_mode()['min_score'])
+                fallback_min = max(60, get_mode()['min_score'])
                 extra = [r for r in all_scan_results
                          if r['score'] >= fallback_min
                          and r.get('rr', 0) >= 1.1
