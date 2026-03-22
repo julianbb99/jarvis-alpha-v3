@@ -368,6 +368,109 @@ def _b44_set(key: str, data: dict):
     except Exception as e:
         log.warning(f'Base44 save Fehler: {e}')
 
+
+def sync_dashboard():
+    """Synct Positionen, Stats und Trades live in Base44 Datenbank."""
+    try:
+        hdrs = {'Authorization': f'Bearer {BASE44_TOKEN}', 'Content-Type': 'application/json'}
+        now  = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # ── 1. Balance holen ─────────────────────────────────────────────────
+        bal_data = api_get('/api/v2/mix/account/accounts?productType=USDT-FUTURES')
+        acc = next((a for a in bal_data.get('data', []) if a.get('marginCoin') == 'USDT'), {})
+        equity    = float(acc.get('accountEquity', 0))
+        available = float(acc.get('available', 0))
+
+        # ── 2. Offene Positionen ─────────────────────────────────────────────
+        pos_data  = api_get('/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT')
+        positions = [p for p in pos_data.get('data', []) if float(p.get('total', 0)) > 0]
+        open_pnl  = sum(float(p.get('unrealizedPL', 0)) for p in positions)
+
+        # Alte Positionen löschen
+        r = requests.get(f'{BASE44_API_URL}/BotPosition', headers=hdrs, timeout=8)
+        for rec in (r.json() if r.status_code == 200 else []):
+            requests.delete(f'{BASE44_API_URL}/BotPosition/{rec["id"]}', headers=hdrs, timeout=5)
+
+        # Neue Positionen speichern
+        for p in positions:
+            entry  = float(p.get('openPriceAvg', 0))
+            margin = float(p.get('marginSize', 0))
+            pnl    = float(p.get('unrealizedPL', 0))
+            requests.post(f'{BASE44_API_URL}/BotPosition', headers=hdrs, timeout=8, json={
+                'symbol':         p.get('symbol', '').replace('USDT', ''),
+                'side':           p.get('holdSide', '').upper(),
+                'entry':          entry,
+                'mark_price':     float(p.get('markPrice', entry)),
+                'size':           float(p.get('total', 0)),
+                'margin':         margin,
+                'unrealized_pnl': pnl,
+                'pnl_pct':        round(pnl / margin * 100, 2) if margin > 0 else 0,
+                'updated_at':     now,
+            })
+
+        # ── 3. Trade History ─────────────────────────────────────────────────
+        hist_data = api_get('/api/v2/mix/order/orders-history?productType=USDT-FUTURES&limit=50')
+        raw       = hist_data.get('data', {})
+        orders    = raw if isinstance(raw, list) else (raw.get('entrustedList') or raw.get('orderList') or [])
+        filled    = [o for o in orders if o.get('status') == 'filled']
+
+        # Nur neue Trades speichern (nicht schon vorhandene)
+        r2 = requests.get(f'{BASE44_API_URL}/BotTrade', headers=hdrs, timeout=8)
+        existing_ids = {rec.get('order_id') for rec in (r2.json() if r2.status_code == 200 else [])}
+
+        total_pnl = 0; wins = 0; losses = 0; total_fees = 0
+        best_pnl = 0; best_coin = ''; worst_pnl = 0; worst_coin = ''
+
+        for o in filled:
+            oid  = o.get('orderId', '')
+            pnl  = float(o.get('totalProfits', 0))
+            fee  = abs(float(o.get('fee', 0)))
+            if pnl != 0:
+                total_pnl += pnl
+                total_fees += fee
+                if pnl > 0: wins += 1
+                else: losses += 1
+                sym = o.get('symbol', '').replace('USDT', '')
+                if pnl > best_pnl:  best_pnl = pnl;  best_coin = sym
+                if pnl < worst_pnl: worst_pnl = pnl; worst_coin = sym
+            if oid and oid not in existing_ids:
+                requests.post(f'{BASE44_API_URL}/BotTrade', headers=hdrs, timeout=8, json={
+                    'symbol':      o.get('symbol', '').replace('USDT', ''),
+                    'side':        'LONG' if o.get('side') == 'buy' else 'SHORT',
+                    'entry_price': float(o.get('priceAvg', 0)),
+                    'size':        float(o.get('baseVolume', o.get('size', 0))),
+                    'pnl':         pnl,
+                    'fee':         fee,
+                    'status':      o.get('status', ''),
+                    'order_id':    oid,
+                    'trade_time':  now,
+                })
+
+        total_trades = wins + losses
+        win_rate     = wins / total_trades * 100 if total_trades > 0 else 0
+
+        # ── 4. Stats speichern (upsert) ──────────────────────────────────────
+        stats = {
+            'key': 'live', 'equity': equity, 'available': available,
+            'open_pnl': open_pnl, 'total_pnl': total_pnl, 'win_rate': win_rate,
+            'wins': wins, 'losses': losses, 'total_trades': total_trades,
+            'total_fees': total_fees, 'best_trade_coin': best_coin,
+            'best_trade_pnl': best_pnl, 'worst_trade_coin': worst_coin,
+            'worst_trade_pnl': worst_pnl, 'updated_at': now,
+        }
+        r3  = requests.get(f'{BASE44_API_URL}/BotStats', headers=hdrs, timeout=8)
+        recs = r3.json() if r3.status_code == 200 else []
+        existing = next((rec for rec in recs if rec.get('key') == 'live'), None)
+        if existing:
+            requests.put(f'{BASE44_API_URL}/BotStats/{existing["id"]}', headers=hdrs, json=stats, timeout=8)
+        else:
+            requests.post(f'{BASE44_API_URL}/BotStats', headers=hdrs, json=stats, timeout=8)
+
+        log.info(f'📊 Dashboard synced | Equity: ${equity:.2f} | {len(positions)} Pos | PnL: ${total_pnl:.2f}')
+
+    except Exception as e:
+        log.warning(f'Dashboard sync Fehler: {e}')
+
 def load_memory():
     # 1. Versuch: Base44 persistentes Memory
     data = _b44_get(BASE44_MEM_KEY)
@@ -2429,6 +2532,7 @@ def run():
                 sorted(all_scan_results, key=lambda x: x['score'], reverse=True),
                 scan_time
             )
+            sync_dashboard()  # Live-Daten in Base44 DB speichern
 
             # ── Trade-Ausführung ──────────────────────────────────────────────
             signals.sort(key=lambda x: x['score'], reverse=True)
