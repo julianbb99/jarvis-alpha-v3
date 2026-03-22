@@ -1090,9 +1090,8 @@ def round_qty(qty: float, symbol: str = '') -> str:
 def place_order(symbol, side, size_usdt, tp, sl, price):
     qty = size_usdt * LEVERAGE / price
     # Mindest-Order Prüfung (Bitget min $5 USDT Notional)
-    precision_info = _precision_cache.get(symbol, {})
-    min_qty       = float(precision_info.get('minTradeNum', 1))
-    min_usdt      = float(precision_info.get('minTradeUSDT', 5))
+    min_qty  = 1.0   # Bitget Standard-Minimum
+    min_usdt = 5.0   # Bitget min $5 Notional
     notional_usdt = qty * price
 
     if qty <= 0:
