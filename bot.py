@@ -823,6 +823,192 @@ def learn_from_trades(mem, params):
 #  COIN ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FIBONACCI & STRUCTURE ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def find_swing_points(hi: list, lo: list, cl: list, lookback: int = 30):
+    """Findet letzten klaren Swing High und Swing Low in den letzten N Kerzen."""
+    n = len(cl)
+    if n < lookback + 5:
+        return None, None
+    
+    window = min(lookback, n - 5)
+    recent_hi = hi[-(window+1):-1]
+    recent_lo = lo[-(window+1):-1]
+    
+    swing_high = max(recent_hi)
+    swing_low  = min(recent_lo)
+    
+    return swing_high, swing_low
+
+
+def calc_fib_levels(swing_high: float, swing_low: float, signal: str):
+    """
+    Berechnet Fibonacci Retracement Levels.
+    LONG:  Retracement vom Swing Low nach oben (Pullback in Long-Trend)
+    SHORT: Retracement vom Swing High nach unten (Pullback in Short-Trend)
+    
+    Returns dict mit level → price
+    """
+    diff = swing_high - swing_low
+    if diff <= 0:
+        return {}
+    
+    if signal == 'LONG':
+        # Preis ist gefallen → Fib vom High nach unten
+        # Einstieg bei Retracement (Rücksetzer finden sich bei 0.618 / 0.786)
+        return {
+            0.236: swing_high - diff * 0.236,
+            0.382: swing_high - diff * 0.382,
+            0.500: swing_high - diff * 0.500,
+            0.618: swing_high - diff * 0.618,
+            0.786: swing_high - diff * 0.786,
+            # Extensions für TP
+            1.272: swing_low  - diff * 0.272,
+            1.618: swing_low  - diff * 0.618,
+        }
+    else:
+        # SHORT: Preis ist gestiegen → Fib vom Low nach oben
+        return {
+            0.236: swing_low  + diff * 0.236,
+            0.382: swing_low  + diff * 0.382,
+            0.500: swing_low  + diff * 0.500,
+            0.618: swing_low  + diff * 0.618,
+            0.786: swing_low  + diff * 0.786,
+            # Extensions für TP
+            1.272: swing_high + diff * 0.272,
+            1.618: swing_high + diff * 0.618,
+        }
+
+
+def check_fib_entry(price: float, signal: str, swing_high: float, swing_low: float,
+                    atr: float, hi: list, lo: list, cl: list):
+    """
+    Prüft ob aktueller Preis an einem starken Fibonacci Level liegt.
+    
+    Returns:
+        score_bonus (int): 0-40 Punkte
+        fib_level (float|None): Welches Level getroffen wurde
+        tp_fib (float|None): Fibonacci-basierter TP (Extension)
+        reason (str): Beschreibung
+    """
+    if swing_high is None or swing_low is None:
+        return 0, None, None, ''
+    
+    diff = swing_high - swing_low
+    if diff <= 0 or diff < atr * 0.5:
+        return 0, None, None, ''
+    
+    fib_levels = calc_fib_levels(swing_high, swing_low, signal)
+    tolerance  = atr * 0.4  # Preis muss innerhalb 0.4x ATR vom Level sein
+    
+    best_score = 0
+    best_level = None
+    best_reason = ''
+    tp_fib = None
+    
+    # Starke Levels prüfen (0.618 und 0.786 sind die stärksten)
+    level_scores = {
+        0.786: 40,   # Goldenes Pocket — stärkstes Level
+        0.618: 35,   # Goldenes Ratio
+        0.500: 20,   # 50% — psychologisch wichtig
+        0.382: 15,   # Schwächeres Level
+        0.236: 8,    # Sehr schwach
+    }
+    
+    for level, bonus in level_scores.items():
+        if level not in fib_levels:
+            continue
+        fib_price = fib_levels[level]
+        if abs(price - fib_price) <= tolerance:
+            if bonus > best_score:
+                best_score  = bonus
+                best_level  = level
+                best_reason = f'Fib {level:.3f} ({fib_price:.4f})'
+    
+    # Wenn ein Level gefunden: TP auf nächste Extension setzen
+    if best_level is not None:
+        if signal == 'LONG' and 1.272 in fib_levels:
+            tp_fib = fib_levels[1.272]
+        elif signal == 'SHORT' and 1.272 in fib_levels:
+            tp_fib = fib_levels[1.272]
+    
+    # Zusatz-Bonus: Letzte Kerze dreht an dem Level (Bestätigung)
+    if best_level is not None and len(cl) >= 3:
+        last_cl  = cl[-2]
+        prev_cl  = cl[-3]
+        last_hi  = hi[-2]
+        last_lo  = lo[-2]
+        fib_price = fib_levels[best_level]
+        
+        if signal == 'LONG':
+            # Bullish Reversal Kerze: Low hat Fib berührt, Close > Open
+            if last_lo <= fib_price + tolerance and last_cl > prev_cl:
+                best_score += 15
+                best_reason += ' + Reversal-Kerze ✅'
+        else:
+            # Bearish Reversal Kerze: High hat Fib berührt, Close < Open
+            if last_hi >= fib_price - tolerance and last_cl < prev_cl:
+                best_score += 15
+                best_reason += ' + Reversal-Kerze ✅'
+    
+    return best_score, best_level, tp_fib, best_reason
+
+
+def detect_structure_break(hi: list, lo: list, cl: list, signal: str):
+    """
+    Erkennt einen Structure Break (Wendepunkt) — Preis bricht vorherigen Swing.
+    Das ist der stärkste Einstiegs-Indikator.
+    
+    BOS (Break of Structure): Preis bricht letztes Higher Low / Lower High
+    CHoCH (Change of Character): Trendwechsel-Signal
+    
+    Returns: score_bonus, reason
+    """
+    n = len(cl)
+    if n < 20:
+        return 0, ''
+    
+    # Letzte 5 Hochs/Tiefs analysieren
+    recent_hi = hi[-15:-1]
+    recent_lo = lo[-15:-1]
+    current   = cl[-2]
+    prev      = cl[-3]
+    
+    if not recent_hi or not recent_lo:
+        return 0, ''
+    
+    prev_high = max(recent_hi[:-3]) if len(recent_hi) > 3 else max(recent_hi)
+    prev_low  = min(recent_lo[:-3]) if len(recent_lo) > 3 else min(recent_lo)
+    last_high = max(recent_hi[-3:]) if len(recent_hi) >= 3 else recent_hi[-1]
+    last_low  = min(recent_lo[-3:]) if len(recent_lo) >= 3 else recent_lo[-1]
+    
+    score = 0
+    reason = ''
+    
+    if signal == 'LONG':
+        # CHoCH: Preis macht Higher Low nach einer Downphase
+        if last_low > prev_low and current > prev:
+            score += 20
+            reason = 'CHoCH Bullish'
+        # BOS: Preis bricht über letztes Lower High
+        if current > last_high and prev <= last_high:
+            score += 25
+            reason = 'BOS Bullish ↑'
+    else:
+        # CHoCH: Preis macht Lower High nach einer Upphase
+        if last_high < prev_high and current < prev:
+            score += 20
+            reason = 'CHoCH Bearish'
+        # BOS: Preis bricht unter letztes Higher Low
+        if current < last_low and prev >= last_low:
+            score += 25
+            reason = 'BOS Bearish ↓'
+    
+    return score, reason
+
 def analyze_coin(symbol, params):
     d = get_candles(symbol, TIMEFRAME, 100)
     if not d:
@@ -949,6 +1135,39 @@ def analyze_coin(symbol, params):
         score += reg_bonus
         reasons.append(f'Regime:{regime}({reg_bonus:+d})')
 
+    # ── FIBONACCI + STRUCTURE BREAK ANALYSE ─────────────────────────────────
+    # 4H Candles für Swing-Analyse holen
+    d4h = get_candles(symbol, '240', 60)  # 4H Kerzen für Swing-Punkte
+    if d4h and len(d4h.get('cl', [])) >= 20:
+        hi4h = d4h['hi']; lo4h = d4h['lo']; cl4h = d4h['cl']
+        
+        # Swing Punkte finden
+        swing_high, swing_low = find_swing_points(hi4h, lo4h, cl4h, lookback=40)
+        
+        # Fibonacci Level Check
+        fib_bonus, fib_level, tp_fib, fib_reason = check_fib_entry(
+            price, signal, swing_high, swing_low, at, hi, lo, cl
+        )
+        if fib_bonus > 0:
+            score += fib_bonus
+            reasons.append(fib_reason)
+        
+        # Structure Break Check (stärkstes Signal)
+        struct_bonus, struct_reason = detect_structure_break(hi4h, lo4h, cl4h, signal)
+        if struct_bonus > 0:
+            score += struct_bonus
+            reasons.append(struct_reason)
+        
+        # TP auf Fib Extension setzen wenn sinnvoll (besser als ATR-TP)
+        if tp_fib is not None:
+            if signal == 'LONG'  and tp_fib > price * 1.003:  # min 0.3% TP
+                tp = tp_fib
+            elif signal == 'SHORT' and tp_fib < price * 0.997:
+                tp = tp_fib
+    else:
+        swing_high, swing_low = None, None
+        fib_level = None
+
     # ── QUALITÄTSFILTER — ausgewogene Mindestanforderungen ─────────────────
     # 1) Trend gegen Trade: Score-Malus, ABER: wenn RSI extrem + BB Touch → erlaubt
     #    Harter Block nur wenn Score trotzdem unter 65
@@ -1028,6 +1247,9 @@ def analyze_coin(symbol, params):
         'trend_4h': trend_4h,
         'macd_hist': macd_hist,
         'stoch_k':  stoch_k,
+        'fib_level': fib_level if 'fib_level' in dir() else None,
+        'swing_high': swing_high if 'swing_high' in dir() else None,
+        'swing_low':  swing_low  if 'swing_low'  in dir() else None,
         'reasons':  ' + '.join(reasons),
     }
 
