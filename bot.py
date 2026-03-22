@@ -23,14 +23,14 @@ BASE44_APP = os.getenv('BASE44_APP_ID', '69a75a817485663824cde2d6')
 BASE_URL   = 'https://api.bitget.com'
 BASE44_URL = f'https://api.base44.com/api/apps/{BASE44_APP}/entities'
 
-LEVERAGE     = 20
-RISK_PCT     = 0.12       # 12% Balance pro Trade
-MAX_OPEN     = 2          # max 2 gleichzeitige Positionen
+LEVERAGE     = 25
+RISK_PCT     = 0.30       # 30% Balance pro Trade — $5-10 Ziel
+MAX_OPEN     = 1          # 1 Trade — voll konzentriert
 SCAN_SEC     = 90         # alle 90s scannen
-COOLDOWN_SEC = 1200       # 20min kein Re-Entry
-TP_PCT       = 0.018      # 1.8% TP → bei 20x = ~36% auf Margin
-SL_PCT       = 0.009      # 0.9% SL → bei 20x = ~18% auf Margin
-MAX_HOLD_H   = 1.5        # max 1.5h halten
+COOLDOWN_SEC = 900        # 15min Cooldown
+TP_PCT       = 0.025      # 2.5% TP → bei 25x = ~62% auf Margin
+SL_PCT       = 0.012      # 1.2% SL — kein frühzeitiger Stop
+MAX_HOLD_H   = 1.0        # max 1h
 
 # Coin-Liste — volatile Coins mit gutem Volumen
 COINS = [
@@ -324,7 +324,7 @@ def check_positions():
 # ── MAIN LOOP ─────────────────────────────────────────────────────────────────
 def run():
     log.info("🚀 JARVIS V5 gestartet")
-    tg("🚀 <b>JARVIS V5 gestartet</b>\n⚡ EMA Cross Strategie\n🎯 TP 1.8% | SL 0.9% | 20x Hebel")
+    tg("🚀 <b>JARVIS V5.1 gestartet</b>\n⚡ 1 Trade gleichzeitig | 30% Kapital\n🎯 TP 2.5% | SL 1.2% | 25x")
 
     scan = 0
     while True:
@@ -386,7 +386,7 @@ def run():
                     oid    = place_order(sym, side, trade_size, price)
                     if oid:
                         log.info(f"✅ Trade eröffnet: {sym} {side} ${trade_size:.2f}")
-                        tg(f"🟢 <b>TRADE ERÖFFNET</b>\n{sym} <b>{side}</b>\n💰 Margin: ${trade_size:.2f} | Hebel: {LEVERAGE}x\n🎯 TP: +1.8% | SL: -0.9%\n📊 Score: {sig['score']}")
+                        tg(f"🟢 <b>TRADE ERÖFFNET</b>\n{sym} <b>{side}</b>\n💰 Margin: ${trade_size:.2f} | Hebel: {LEVERAGE}x\n🎯 TP: +2.5% | SL: -1.2%\n📊 Score: {sig['score']}")
                         _cooldown[sym] = time.time()
                         b44_post('BotTrade', {'symbol': sym, 'side': side, 'entry_price': price,
                             'size': trade_size, 'pnl': 0, 'status': 'filled',
