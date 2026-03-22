@@ -2073,9 +2073,12 @@ def run():
     _start_balance = get_balance()
     if _start_balance > 0:
         eq = load_equity()
-        if eq.get('peak', 0) == 0:
-            eq['peak'] = _start_balance
-            save_equity(eq)
+        # Peak IMMER auf aktuelle Balance setzen beim Start → DD Reset
+        eq['peak'] = _start_balance
+        eq['current_drawdown'] = 0.0
+        save_equity(eq)
+    global _paused
+    _paused = False  # Drawdown-Pause beim Start immer aufheben
 
     tg(
         f"⚡ <b>JARVIS ALPHA — ONLINE</b>\n"
