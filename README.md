@@ -1,2 +1,2 @@
-# jarvis-alpha-v3
-JARVIS Alpha Bot V3 - Self-Learning
+# JARVIS Gold Forwarder
+Automatic signal forwarder for Telegram.
