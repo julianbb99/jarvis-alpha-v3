@@ -1,2 +1,1 @@
-# JARVIS Gold Forwarder
-Automatic signal forwarder for Telegram.
+# JARVIS Gold Forwarder v2
