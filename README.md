@@ -1,1 +1,2 @@
-# JARVIS Gold Forwarder v3
+# JARVIS Gold Forwarder
+Session updated and validated
