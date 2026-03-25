@@ -3,8 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python forwarder.py",
-    "restartPolicyType": "ALWAYS",
-    "restartPolicyMaxRetries": 100
+    "startCommand": "echo 'Railway paused - running on JARVIS sandbox'",
+    "restartPolicyType": "NEVER"
   }
 }
