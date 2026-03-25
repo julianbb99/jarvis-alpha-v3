@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-JARVIS Gold Signal Forwarder V2
+JARVIS Gold Signal Forwarder V3
 Liest: MS GOLD GROUP -> Postet: Gold VIP Signal
+Native Forward - kein Text-Prefix
 """
 import os, asyncio, logging, time
 from telethon import TelegramClient, events
@@ -22,7 +23,7 @@ SOURCE_ID = -1003682518587   # MS GOLD GROUP
 TARGET_ID = -1003772081371   # Gold VIP Signal
 
 async def main():
-    log.info("Starte JARVIS Gold Forwarder V2...")
+    log.info("Starte JARVIS Gold Forwarder V3...")
 
     client = TelegramClient(
         StringSession(SESSION),
@@ -41,35 +42,30 @@ async def main():
         return
 
     me = await client.get_me()
-    log.info(f"Eingeloggt als: {me.first_name} (@{me.username})")
-
-    try:
-        await client.send_message(TARGET_ID,
-            "🤖 JARVIS Forwarder V2 gestartet\n"
-            "📡 Lese: MS GOLD GROUP\n"
-            "✅ Alle Signale werden instant weitergeleitet"
-        )
-        log.info("Startup-Nachricht gesendet")
-    except Exception as e:
-        log.warning(f"Startup-Nachricht Fehler: {e}")
+    log.info(f"✅ Eingeloggt als: {me.first_name} (@{me.username})")
+    log.info(f"📡 Höre auf: MS GOLD GROUP ({SOURCE_ID})")
+    log.info(f"📤 Leite weiter an: Gold VIP Signal ({TARGET_ID})")
+    log.info("👂 Warte auf Signale...")
 
     @client.on(events.NewMessage(chats=SOURCE_ID))
     async def handler(event):
         msg = event.message
         text = msg.text or ""
-        log.info(f"Signal: {text[:120]}")
-        try:
-            if msg.media:
-                await client.send_message(TARGET_ID, message=msg)
-                log.info("Mit Medien weitergeleitet")
-            elif text.strip():
-                forwarded = f"🥇 MS GOLD GROUP:\n\n{text}"
-                await client.send_message(TARGET_ID, forwarded)
-                log.info("Weitergeleitet")
-        except Exception as e:
-            log.error(f"Weiterleitung Fehler: {e}")
+        log.info(f"📨 Neues Signal: {text[:80]}")
 
-    log.info("Warte auf Signale...")
+        try:
+            # Natives Forward — zeigt "MS GOLD GROUP" als Absender
+            await client.forward_messages(TARGET_ID, msg)
+            log.info("✅ Nativ weitergeleitet")
+        except Exception as e:
+            log.warning(f"Forward fehlgeschlagen ({e}), sende als Text...")
+            try:
+                if text.strip():
+                    await client.send_message(TARGET_ID, text)
+                    log.info("✅ Als Text weitergeleitet")
+            except Exception as e2:
+                log.error(f"❌ Fehler: {e2}")
+
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
@@ -79,5 +75,5 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             break
         except Exception as e:
-            log.error(f"Crash: {e} - Neustart in 10s...")
+            log.error(f"💥 Crash: {e} - Neustart in 10s...")
             time.sleep(10)
